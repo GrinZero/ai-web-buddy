@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   type Song,
@@ -17,6 +17,7 @@ import {
   getAlbumGradient,
 } from '@/lib/vibeEngine';
 import type { SceneResult } from '@/lib/useVibeStore';
+import { useNeteaseInfo, MiniPlayer } from '@/hooks/useNeteaseInfo';
 
 type SubStage = 'rules' | 'demo' | 'quiz' | 'playlist';
 
@@ -91,6 +92,36 @@ export default function DemoLoopStage({
   const tuneDislikes = currentVersionData?.tuneDislikes || {};
 
   const displayedPlaylist = showAllSongs ? playlist : playlist.slice(0, 10);
+
+  // NetEase media integration
+  const { fetchBatch, getInfo } = useNeteaseInfo();
+
+  // Fetch media for demo batch
+  useEffect(() => {
+    if (demoBatch.length > 0) {
+      fetchBatch(demoBatch.map(s => ({ name: s.name, artist: s.artist })));
+    }
+  }, [demoBatch]);
+
+  // Fetch media for quiz empirical songs
+  useEffect(() => {
+    if (subStage === 'quiz' && quizQuestions.length > 0) {
+      const empiricalSongs = quizQuestions
+        .filter(q => q.type === 'empirical')
+        .flatMap(q => q.options.filter(o => o.songRef).map(o => {
+          const parts = o.songRef!.split('-');
+          return { name: parts[0], artist: parts.slice(1).join('-') };
+        }));
+      if (empiricalSongs.length > 0) fetchBatch(empiricalSongs);
+    }
+  }, [subStage, quizQuestions]);
+
+  // Fetch media for playlist top 10
+  useEffect(() => {
+    if (subStage === 'playlist' && playlist.length > 0) {
+      fetchBatch(playlist.slice(0, 10).map(s => ({ name: s.name, artist: s.artist })));
+    }
+  }, [subStage, playlist]);
 
   // ========== Demo init ==========
   const startDemos = useCallback(() => {
@@ -557,13 +588,24 @@ export default function DemoLoopStage({
 
                 {/* Album card */}
                 <div className="relative">
-                  <motion.div
-                    whileHover={{ scale: 1.05 }}
-                    className="flex h-48 w-48 items-center justify-center rounded-2xl text-5xl font-serif text-white/80 select-none shadow-lg"
-                    style={{ background: getAlbumGradient(currentDemo.name) }}
-                  >
-                    {currentDemo.name.charAt(0)}
-                  </motion.div>
+                  {(() => {
+                    const info = getInfo(currentDemo.name, currentDemo.artist);
+                    return (
+                      <motion.div
+                        whileHover={{ scale: 1.05 }}
+                        className="flex h-48 w-48 items-center justify-center rounded-2xl text-5xl font-serif text-white/80 select-none shadow-lg overflow-hidden"
+                        style={info.coverUrl ? {} : { background: getAlbumGradient(currentDemo.name) }}
+                      >
+                        {info.coverUrl ? (
+                          <img src={info.coverUrl} alt={currentDemo.name} className="h-full w-full object-cover" />
+                        ) : info.loading ? (
+                          <div className="animate-pulse text-3xl">🎵</div>
+                        ) : (
+                          currentDemo.name.charAt(0)
+                        )}
+                      </motion.div>
+                    );
+                  })()}
                   {showHeartAnim && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                       <motion.span
@@ -590,6 +632,10 @@ export default function DemoLoopStage({
 
               <h3 className="mt-6 text-xl font-medium text-foreground">{currentDemo.name}</h3>
               <p className="mt-1 text-muted-foreground">{currentDemo.artist}</p>
+              {/* Audio preview */}
+              <div className="mt-2">
+                <MiniPlayer previewUrl={getInfo(currentDemo.name, currentDemo.artist).previewUrl} songName={currentDemo.name} />
+              </div>
 
               {/* Undo like hint */}
               {canUndoLike && (
@@ -749,17 +795,26 @@ export default function DemoLoopStage({
                 <div className="space-y-2">
                   {currentQuiz.options.map((opt) => {
                     const selected = quizSelections[currentQuiz.id]?.has(opt.label);
+                    const songRef = opt.songRef;
+                    const songParts = songRef ? songRef.split('-') : null;
+                    const songInfo = songParts ? getInfo(songParts[0], songParts.slice(1).join('-')) : null;
                     return (
                       <button
                         key={opt.label}
                         onClick={() => toggleQuizOption(currentQuiz.id, opt.label)}
-                        className={`w-full rounded-xl border p-3 text-left text-sm transition-all ${
+                        className={`w-full rounded-xl border p-3 text-left text-sm transition-all flex items-center gap-3 ${
                           selected
                             ? 'border-primary bg-vibe-pink-light text-foreground'
                             : 'border-border bg-background text-foreground hover:border-primary/50'
                         }`}
                       >
-                        {opt.label}
+                        {songInfo?.coverUrl && (
+                          <img src={songInfo.coverUrl} alt="" className="h-10 w-10 rounded-lg shrink-0 object-cover" />
+                        )}
+                        <span className="flex-1">{opt.label}</span>
+                        {songInfo?.previewUrl && (
+                          <MiniPlayer previewUrl={songInfo.previewUrl} songName={opt.label} />
+                        )}
                       </button>
                     );
                   })}
@@ -876,16 +931,26 @@ export default function DemoLoopStage({
                       }`}
                     >
                       <div className="flex items-center gap-3">
-                        <div
-                          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-lg font-serif text-white/80"
-                          style={{ background: getAlbumGradient(song.name) }}
-                        >
-                          {song.name.charAt(0)}
-                        </div>
+                        {(() => {
+                          const info = i < 10 ? getInfo(song.name, song.artist) : null;
+                          return info?.coverUrl ? (
+                            <img src={info.coverUrl} alt={song.name} className="h-12 w-12 shrink-0 rounded-lg object-cover" />
+                          ) : (
+                            <div
+                              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-lg font-serif text-white/80"
+                              style={{ background: getAlbumGradient(song.name) }}
+                            >
+                              {song.name.charAt(0)}
+                            </div>
+                          );
+                        })()}
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium text-foreground">{song.name}</p>
                           <p className="truncate text-xs text-muted-foreground">{song.artist}</p>
                         </div>
+                        {i < 10 && (
+                          <MiniPlayer previewUrl={getInfo(song.name, song.artist).previewUrl} songName={song.name} />
+                        )}
                         {versions.length <= MAX_TUNE_ROUNDS && (
                           <div className="flex gap-1.5 shrink-0">
                             <button
