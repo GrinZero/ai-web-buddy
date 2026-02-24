@@ -25,25 +25,59 @@ async function fallbackNetEase(url: string, headers: Record<string, string>): Pr
     const playlistId = idMatch[1];
     console.log('Fallback: extracted playlist ID:', playlistId);
 
-    // Use NetEase Cloud Music API to get playlist details
-    const apiUrl = `https://music.163.com/api/playlist/detail?id=${playlistId}`;
+    // Use NetEase Cloud Music web API v6 to get playlist details
+    const apiUrl = `https://music.163.com/api/v6/playlist/detail?id=${playlistId}&n=100000&s=0`;
     const resp = await fetch(apiUrl, {
       headers: {
         'Referer': 'https://music.163.com/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        'Cookie': 'os=ios; appver=9.0.95;',
+        'Accept': '*/*',
       },
     });
 
     const data = await resp.json();
-    if (data.code !== 200 || !data.result?.tracks) {
+    console.log('NetEase API response code:', data.code);
+    
+    // Try different response structures
+    const tracks = data.playlist?.tracks || data.result?.tracks || [];
+    if (data.code !== 200 || tracks.length === 0) {
+      // Try alternate endpoint
+      const altUrl = `https://music.163.com/api/v3/playlist/detail?id=${playlistId}&n=5000&s=0`;
+      const altResp = await fetch(altUrl, {
+        headers: {
+          'Referer': 'https://music.163.com/',
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+          'Cookie': 'os=ios; appver=9.0.95;',
+        },
+      });
+      const altData = await altResp.json();
+      console.log('NetEase alt API response code:', altData.code);
+      
+      const altTracks = altData.playlist?.tracks || altData.result?.tracks || [];
+      if (altData.code !== 200 || altTracks.length === 0) {
+        return new Response(
+          JSON.stringify({ success: false, error: '歌单获取失败，可能是私密歌单或链接无效' }),
+          { status: 400, headers: { ...headers, 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      const songs = altTracks.map((track: { name: string; ar?: { name: string }[]; artists?: { name: string }[] }) => {
+        const artistList = track.ar || track.artists || [];
+        const artists = artistList.map((a: { name: string }) => a.name).join('/') || '未知';
+        return `${track.name} - ${artists}`;
+      });
+      
+      console.log(`Alt API parsed ${songs.length} songs`);
       return new Response(
-        JSON.stringify({ success: false, error: '歌单获取失败，可能是私密歌单或链接无效' }),
-        { status: 400, headers: { ...headers, 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: true, songs, count: songs.length }),
+        { headers: { ...headers, 'Content-Type': 'application/json' } }
       );
     }
 
-    const songs = data.result.tracks.map((track: { name: string; artists: { name: string }[] }) => {
-      const artists = track.artists?.map((a: { name: string }) => a.name).join('/') || '未知';
+    const songs = tracks.map((track: { name: string; ar?: { name: string }[]; artists?: { name: string }[] }) => {
+      const artistList = track.ar || track.artists || [];
+      const artists = artistList.map((a: { name: string }) => a.name).join('/') || '未知';
       return `${track.name} - ${artists}`;
     });
 
