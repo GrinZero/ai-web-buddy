@@ -35,15 +35,16 @@ function isGoodMatch(
   querySongName: string,
   queryArtist: string,
   resultSongName: string,
-  resultArtists: string[]
+  resultArtists: string[],
+  levThreshold: number = 0.6
 ): boolean {
-  const qName = normalize(querySongName);
+  const qName = normalize(cleanSongName(querySongName));
   const rName = normalize(resultSongName);
 
   // Song name must substantially overlap
   const nameMatch = rName.includes(qName) || qName.includes(rName) ||
-    (qName.length > 2 && rName.length > 2 && (
-      levenshteinRatio(qName, rName) > 0.6
+    (qName.length > 1 && rName.length > 1 && (
+      levenshteinRatio(qName, rName) > levThreshold
     ));
 
   if (!nameMatch) return false;
@@ -81,6 +82,14 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n];
 }
 
+// Strip common suffixes from song names for better search
+function cleanSongName(name: string): string {
+  return name
+    .replace(/\s*[\(（\[【].*?[\)）\]】]\s*/g, '') // Remove (Live), (Remix), (demo), etc.
+    .replace(/\s*-\s*(Live|Remix|Demo|Acoustic|Deluxe|Remastered|Version|Soundtrack|Radio Edit).*$/i, '')
+    .trim();
+}
+
 async function searchSong(song: SongQuery): Promise<SongResult> {
   const result: SongResult = {
     name: song.name,
@@ -91,55 +100,59 @@ async function searchSong(song: SongQuery): Promise<SongResult> {
   };
 
   try {
-    const keyword = `${song.name} ${song.artist}`;
+    const cleanedName = cleanSongName(song.name);
+    // Try multiple search strategies
+    const searchStrategies = [
+      `${cleanedName} ${song.artist}`,  // cleaned name + artist
+      `${song.name} ${song.artist}`,     // original name + artist
+      cleanedName,                        // just cleaned name (no artist)
+    ];
+
     let matchedSong: { id: number; name?: string; artists?: { name: string }[]; ar?: { name: string }[]; album?: { picUrl?: string }; al?: { picUrl?: string } } | null = null;
 
     const endpoints = [
-      {
-        url: 'https://music.163.com/api/cloudsearch/get/web',
-        method: 'POST' as const,
-        body: `s=${encodeURIComponent(keyword)}&type=1&limit=10&offset=0`,
-      },
-      {
-        url: 'https://music.163.com/api/search/get',
-        method: 'POST' as const,
-        body: `s=${encodeURIComponent(keyword)}&type=1&limit=10&offset=0`,
-      },
+      'https://music.163.com/api/cloudsearch/get/web',
+      'https://music.163.com/api/search/get',
     ];
 
-    for (const ep of endpoints) {
-      try {
-        const resp = await fetch(ep.url, {
-          method: ep.method,
-          headers: {
-            ...NETEASE_HEADERS,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: ep.body,
-        });
-        const data = await resp.json();
-        const songs = data?.result?.songs;
-        if (songs && songs.length > 0) {
-          // Find best match among results
-          for (const s of songs) {
-            const sName = s.name || '';
-            const sArtists = (s.artists || s.ar || []).map((a: { name: string }) => a.name);
-            if (isGoodMatch(song.name, song.artist, sName, sArtists)) {
-              matchedSong = s;
-              console.log(`Matched "${keyword}" -> "${sName}" by ${sArtists.join('/')} (id=${s.id})`);
-              break;
+    // Determine Levenshtein threshold based on name length
+    const levThreshold = cleanedName.length <= 3 ? 0.5 : 0.6;
+
+    for (const keyword of searchStrategies) {
+      if (matchedSong) break;
+
+      for (const epUrl of endpoints) {
+        if (matchedSong) break;
+        try {
+          const resp = await fetch(epUrl, {
+            method: 'POST',
+            headers: {
+              ...NETEASE_HEADERS,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `s=${encodeURIComponent(keyword)}&type=1&limit=10&offset=0`,
+          });
+          const data = await resp.json();
+          const songs = data?.result?.songs;
+          if (songs && songs.length > 0) {
+            for (const s of songs) {
+              const sName = s.name || '';
+              const sArtists = (s.artists || s.ar || []).map((a: { name: string }) => a.name);
+              if (isGoodMatch(song.name, song.artist, sName, sArtists, levThreshold)) {
+                matchedSong = s;
+                console.log(`Matched "${keyword}" -> "${sName}" by ${sArtists.join('/')} (id=${s.id})`);
+                break;
+              }
             }
           }
-          if (matchedSong) break;
-          // Fallback: if no good match found in top 10, skip this endpoint
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
       }
     }
 
     if (!matchedSong) {
-      console.log(`No match found for "${keyword}"`);
+      console.log(`No match found for "${song.name} ${song.artist}"`);
       return result;
     }
 

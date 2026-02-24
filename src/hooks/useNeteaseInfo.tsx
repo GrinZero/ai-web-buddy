@@ -17,15 +17,20 @@ type MediaCache = Record<string, SongMediaInfo>;
  */
 export function useNeteaseInfo() {
   const [cache, setCache] = useState<MediaCache>({});
+  const cacheRef = useRef<MediaCache>({});
   const inflight = useRef<Set<string>>(new Set());
+
+  // Keep ref in sync with state
+  cacheRef.current = cache;
 
   const getKey = (name: string, artist: string) => `${name}-${artist}`;
 
   const fetchBatch = useCallback(async (songs: { name: string; artist: string }[]) => {
-    // Filter out already cached or in-flight
+    // Use ref to read cache to avoid stale closure
+    const currentCache = cacheRef.current;
     const toFetch = songs.filter(s => {
       const key = getKey(s.name, s.artist);
-      return !cache[key] && !inflight.current.has(key);
+      return !currentCache[key] && !inflight.current.has(key);
     });
 
     if (toFetch.length === 0) return;
@@ -90,7 +95,7 @@ export function useNeteaseInfo() {
       });
       setCache(prev => ({ ...prev, ...failEntries }));
     }
-  }, [cache]);
+  }, []); // V4 fix: stable callback - use cacheRef instead of cache dependency
 
   const getInfo = useCallback((name: string, artist: string): SongMediaInfo => {
     return cache[getKey(name, artist)] || { coverUrl: null, previewUrl: null, neteaseId: null, loading: false };
