@@ -202,37 +202,56 @@ export function selectDemoSongs(songs: Song[], scene: Scene, usedSongs: Set<stri
 }
 
 // 根据偏好生成最终歌单（不限量）
+// V4 fix: 实际使用 UserPreference 进行过滤 + 版本优化不全量去重
 export function generatePlaylist(
   songs: Song[],
   scene: Scene,
   preference: UserPreference,
   usedInOtherScenes: Set<string>,
   demoSongKeys: Set<string> = new Set(),
-  previousVersionKeys: Set<string> = new Set() // V4: 版本去重
+  dislikedSongKeys: Set<string> = new Set() // V4: 仅排除被❌的歌曲
 ): Song[] {
-  // Start with liked songs from demo (仅第一版)
-  const liked = previousVersionKeys.size === 0
-    ? preference.likedSongs.filter(s => !usedInOtherScenes.has(`${s.name}-${s.artist}`))
-    : [];
+  // Start with liked songs from demo (always included first)
+  const liked = preference.likedSongs.filter(s => !usedInOtherScenes.has(`${s.name}-${s.artist}`));
+  const likedKeys = new Set(liked.map(s => `${s.name}-${s.artist}`));
 
-  // Get remaining songs, excluding used ones and previous versions
+  // Get remaining songs, excluding used & disliked
   const remaining = songs.filter(s => {
     const key = `${s.name}-${s.artist}`;
     if (usedInOtherScenes.has(key)) return false;
-    if (previousVersionKeys.has(key)) return false;
-    if (liked.some(l => l.name === s.name && l.artist === s.artist)) return false;
+    if (dislikedSongKeys.has(key)) return false;
+    if (likedKeys.has(key)) return false;
     return true;
   });
 
-  // Sort remaining by scene affinity (pseudo-random but deterministic)
-  const sorted = [...remaining].sort((a, b) => {
-    const hashA = simpleHash(a.name + scene.id + 'final' + previousVersionKeys.size);
-    const hashB = simpleHash(b.name + scene.id + 'final' + previousVersionKeys.size);
-    return hashA - hashB;
+  // V4: Apply preference-based scoring
+  const scored = remaining.map(s => {
+    let score = 0;
+    const nameArtist = `${s.name} ${s.artist}`.toLowerCase();
+
+    // Penalize disliked genres/styles/rhythms from demo feedback
+    for (const g of preference.dislikedGenres) {
+      if (nameArtist.includes(g.toLowerCase())) score -= 10;
+    }
+    for (const r of preference.dislikedRhythms) {
+      if (nameArtist.includes(r.toLowerCase())) score -= 10;
+    }
+    for (const st of preference.dislikedStyles) {
+      if (nameArtist.includes(st.toLowerCase())) score -= 10;
+    }
+
+    // Scene affinity hash for deterministic ordering within same score
+    const hash = simpleHash(s.name + scene.id + 'final' + dislikedSongKeys.size);
+    return { song: s, score, hash };
   });
 
-  // 不限量：返回所有适配歌曲，liked优先
-  return [...liked, ...sorted];
+  // Sort: higher score first, then by hash for same score
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    return a.hash - b.hash;
+  });
+
+  return [...liked, ...scored.map(s => s.song)];
 }
 
 // ========== 选择题系统（V4 重构） ==========
@@ -572,11 +591,15 @@ export interface PlaylistVersion {
   allSongKeys: Set<string>; // 该版本所有出现过的歌曲key
 }
 
-// V4: 收集所有历史版本出现过的歌曲key
-export function collectPreviousVersionKeys(versions: PlaylistVersion[]): Set<string> {
+// V4: 收集所有版本中被❌标记的歌曲key（仅排除不喜欢的，不排除全部）
+export function collectDislikedSongKeys(versions: PlaylistVersion[]): Set<string> {
   const keys = new Set<string>();
   for (const v of versions) {
-    v.allSongKeys.forEach(k => keys.add(k));
+    for (const [key, val] of Object.entries(v.tuneDislikes)) {
+      if (val === 'single' || val === 'style') {
+        keys.add(key);
+      }
+    }
   }
   return keys;
 }
