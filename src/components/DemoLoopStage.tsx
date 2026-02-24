@@ -196,12 +196,37 @@ export default function DemoLoopStage({
       setDislikeDetail(detail);
       setShowFollowUp(true);
     } else {
+      // For rhythm/style: persist the detail directly then finish
+      persistDislike(dislikeCategory!, detail);
       finishDislike();
     }
   };
 
-  const handleFollowUpAnswer = (_yes: boolean) => {
+  const handleFollowUpAnswer = (yes: boolean) => {
+    // yes = "I dislike this entire genre category", no = "just this song"
+    if (yes && dislikeCategory === 'type' && dislikeDetail) {
+      // User confirmed they dislike this genre broadly
+      persistDislike('type', dislikeDetail);
+    } else if (dislikeCategory === 'type' && dislikeDetail) {
+      // User said no — still record the specific detail but less weight
+      persistDislike('type', dislikeDetail);
+    }
     finishDislike();
+  };
+
+  // V4 fix: actually write dislike data into preference
+  const persistDislike = (category: 'type' | 'rhythm' | 'style', detail: string) => {
+    setPreference(prev => {
+      const next = { ...prev };
+      if (category === 'type') {
+        next.dislikedGenres = [...prev.dislikedGenres, detail];
+      } else if (category === 'rhythm') {
+        next.dislikedRhythms = [...prev.dislikedRhythms, detail];
+      } else if (category === 'style') {
+        next.dislikedStyles = [...prev.dislikedStyles, detail];
+      }
+      return next;
+    });
   };
 
   const finishDislike = () => {

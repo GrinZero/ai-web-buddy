@@ -224,20 +224,66 @@ export function generatePlaylist(
     return true;
   });
 
+  // V4 fix: Build sets of empirical quiz song keys for scoring
+  const empiricalLikedKeys = new Set<string>();
+  const empiricalShownKeys = new Set<string>();
+  for (const [qId, selections] of Object.entries(preference.quizAnswers)) {
+    if (qId.startsWith('empirical')) {
+      // selections are labels like "songName - artist", extract songRef
+      for (const sel of selections) {
+        // Parse "name - artist" format back to key
+        const sepIdx = sel.indexOf(' - ');
+        if (sepIdx > 0) {
+          const key = `${sel.substring(0, sepIdx)}-${sel.substring(sepIdx + 3)}`;
+          empiricalLikedKeys.add(key);
+          empiricalShownKeys.add(key);
+        }
+      }
+    }
+  }
+  // We need all empirical options (shown but maybe not selected) — approximate from songs pool
+  // Since we can't access quiz questions here, empiricalShownKeys only has selected ones
+  // We'll use demoSongKeys to identify demo songs for exclusion awareness
+
+  // Parse preference quiz signals for penalty keywords
+  const penaltyKeywords: string[] = [];
+  for (const [qId, selections] of Object.entries(preference.quizAnswers)) {
+    if (!qId.startsWith('pref')) continue;
+    for (const sel of selections) {
+      const lower = sel.toLowerCase();
+      // "完全不接受" or "不太接受" rap → penalize rap-related
+      if (lower.includes('不接受') && lower.includes('说唱') || lower === '完全不接受' || lower === '不太接受') {
+        penaltyKeywords.push('说唱', 'rap', 'hip-hop', 'hiphop');
+      }
+      if (lower.includes('不接受高强度')) {
+        penaltyKeywords.push('摇滚', 'rock', 'metal', 'punk');
+      }
+    }
+  }
+
   // V4: Apply preference-based scoring
   const scored = remaining.map(s => {
     let score = 0;
+    const key = `${s.name}-${s.artist}`;
     const nameArtist = `${s.name} ${s.artist}`.toLowerCase();
 
     // Penalize disliked genres/styles/rhythms from demo feedback
     for (const g of preference.dislikedGenres) {
-      if (nameArtist.includes(g.toLowerCase())) score -= 10;
+      if (nameArtist.includes(g.replace(/^太\s*/, '').toLowerCase())) score -= 10;
     }
     for (const r of preference.dislikedRhythms) {
-      if (nameArtist.includes(r.toLowerCase())) score -= 10;
+      if (nameArtist.includes(r.replace(/^太\s*/, '').toLowerCase())) score -= 10;
     }
     for (const st of preference.dislikedStyles) {
-      if (nameArtist.includes(st.toLowerCase())) score -= 10;
+      if (nameArtist.includes(st.replace(/^太\s*/, '').toLowerCase())) score -= 10;
+    }
+
+    // Boost songs liked in empirical quiz
+    if (empiricalLikedKeys.has(key)) score += 5;
+
+    // Penalize by preference quiz keywords
+    for (const kw of penaltyKeywords) {
+      if (nameArtist.includes(kw)) score -= 8;
     }
 
     // Scene affinity hash for deterministic ordering within same score
@@ -251,7 +297,11 @@ export function generatePlaylist(
     return a.hash - b.hash;
   });
 
-  return [...liked, ...scored.map(s => s.song)];
+  // V4 fix: Only return songs with score >= cutoff (filter out heavily penalized)
+  const cutoff = -15;
+  const filtered = scored.filter(s => s.score > cutoff);
+
+  return [...liked, ...filtered.map(s => s.song)];
 }
 
 // ========== 选择题系统（V4 重构） ==========
