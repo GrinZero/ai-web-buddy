@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import type { SceneResult } from '@/lib/useVibeStore';
 import { getAlbumGradient } from '@/lib/vibeEngine';
 
@@ -9,10 +9,12 @@ interface ExportStageProps {
   onRestart: () => void;
 }
 
+type ConfirmAction = 'regenerate' | 'restart' | null;
+
 export default function ExportStage({ results, onRegenerate, onRestart }: ExportStageProps) {
   const [copied, setCopied] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
-  // Generate export text
   const exportText = results.map(r => {
     const header = `【${r.scene.name}】`;
     const songs = r.playlist.map(s => `${s.name} - ${s.artist}`).join('\n');
@@ -27,7 +29,6 @@ export default function ExportStage({ results, onRegenerate, onRestart }: Export
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // fallback
       const textarea = document.createElement('textarea');
       textarea.value = editableText;
       document.body.appendChild(textarea);
@@ -37,6 +38,12 @@ export default function ExportStage({ results, onRegenerate, onRestart }: Export
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const handleConfirm = () => {
+    if (confirmAction === 'regenerate') onRegenerate();
+    else if (confirmAction === 'restart') onRestart();
+    setConfirmAction(null);
   };
 
   return (
@@ -116,19 +123,63 @@ export default function ExportStage({ results, onRegenerate, onRestart }: Export
         {/* Extra buttons */}
         <div className="mt-8 flex justify-center gap-4">
           <button
-            onClick={onRegenerate}
+            onClick={() => setConfirmAction('regenerate')}
             className="rounded-xl border border-border bg-card px-5 py-2.5 text-sm text-muted-foreground hover:bg-secondary transition-colors"
           >
             重新生成歌单
           </button>
           <button
-            onClick={onRestart}
+            onClick={() => setConfirmAction('restart')}
             className="rounded-xl border border-border bg-card px-5 py-2.5 text-sm text-muted-foreground hover:bg-secondary transition-colors"
           >
             重新导入歌单
           </button>
         </div>
       </div>
+
+      {/* Confirmation modal */}
+      <AnimatePresence>
+        {confirmAction && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 backdrop-blur-sm px-4"
+            onClick={() => setConfirmAction(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-lg text-center"
+              onClick={e => e.stopPropagation()}
+            >
+              <p className="mb-1 text-lg font-semibold text-foreground font-serif">
+                {confirmAction === 'regenerate' ? '重新生成歌单？' : '重新导入歌单？'}
+              </p>
+              <p className="mb-6 text-sm text-muted-foreground">
+                {confirmAction === 'regenerate'
+                  ? '将返回场景选择页面，当前生成的歌单将被清除'
+                  : '将返回歌单导入页面，所有数据将被清除'}
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfirmAction(null)}
+                  className="flex-1 rounded-xl border border-border bg-background py-2.5 text-sm text-muted-foreground transition-colors hover:bg-secondary"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleConfirm}
+                  className="flex-1 rounded-xl bg-destructive py-2.5 text-sm font-medium text-destructive-foreground transition-all hover:opacity-90"
+                >
+                  确认
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
