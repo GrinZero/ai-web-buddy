@@ -11,7 +11,7 @@ import {
   generatePlaylist,
   generateQuizQuestions,
   getSwapPreferenceQuestion,
-  collectPreviousVersionKeys,
+  collectDislikedSongKeys,
   DISLIKE_REASONS,
   ENCOURAGEMENTS,
   getAlbumGradient,
@@ -147,8 +147,9 @@ export default function DemoLoopStage({
     if (!song) return;
     const key = `${song.name}-${song.artist}`;
     
+    const newLikeCount = likeCount + 1;
     setPreference(prev => ({ ...prev, likedSongs: [...prev.likedSongs, song] }));
-    setLikeCount(prev => prev + 1);
+    setLikeCount(newLikeCount);
     setLikedInDemo(prev => new Set(prev).add(key));
     
     setShowHeartAnim(true);
@@ -161,7 +162,7 @@ export default function DemoLoopStage({
     
     setTimeout(() => {
       setShowHeartAnim(false);
-      advanceDemo();
+      advanceDemoWithLikes(newLikeCount);
     }, 800);
   };
 
@@ -208,38 +209,41 @@ export default function DemoLoopStage({
     setDislikeCategory(null);
     setDislikeDetail(null);
     setShowFollowUp(false);
-    advanceDemo();
+    advanceDemoWithLikes(likeCount);
   };
 
-  const advanceDemo = () => {
+  // V4 fix: accept explicit likeCount to avoid stale closure
+  const advanceDemoWithLikes = (currentLikes: number) => {
     setCanUndoLike(false);
+    
+    // Auto-advance if enough likes, regardless of batch position
+    if (currentLikes >= MIN_LIKES || skipLikeRequirement) {
+      setProgress(50);
+      if (skipLikeRequirement) {
+        showToast('当前场景适配歌曲较少，已为你跳过喜欢数量要求，继续生成歌单哦✨');
+      }
+      showEncouragementMsg('demoComplete', () => {
+        const qs = generateQuizQuestions(songs, scene, allDemoKeys, usedSongs);
+        setQuizQuestions(qs);
+        setQuizIdx(0);
+        setQuizSelections({});
+        setSubStage('quiz');
+      });
+      return;
+    }
+    
     if (currentDemoIdx < demoBatch.length - 1) {
       setCurrentDemoIdx(prev => prev + 1);
     } else {
-      // All demos in batch done
-      const currentLikes = likeCount + (likedInDemo.has(`${currentDemo?.name}-${currentDemo?.artist}`) ? 0 : 0);
-      if (currentLikes >= MIN_LIKES || skipLikeRequirement) {
-        setProgress(50);
-        if (skipLikeRequirement) {
-          showToast('当前场景适配歌曲较少，已为你跳过喜欢数量要求，继续生成歌单哦✨');
-        }
-        showEncouragementMsg('demoComplete', () => {
-          const qs = generateQuizQuestions(songs, scene, allDemoKeys, usedSongs);
-          setQuizQuestions(qs);
-          setQuizIdx(0);
-          setQuizSelections({});
-          setSubStage('quiz');
-        });
-      } else {
-        setShowNeedMoreLikes(true);
-      }
+      // All demos in batch done but not enough likes
+      setShowNeedMoreLikes(true);
     }
   };
 
   const handleReEvaluate = () => {
     setShowNeedMoreLikes(false);
     setReEvalCount(prev => prev + 1);
-    // Get new batch from pool, excluding already shown
+    // Get new batch from pool, excluding already shown - keep cumulative likes!
     const newBatch = selectDemoBatch(demoPool, shownDemoKeys, Math.min(demoPool.length - shownDemoKeys.size, 6));
     if (newBatch.length === 0) {
       // All pool exhausted, reset shown keys and reshuffle
@@ -255,9 +259,7 @@ export default function DemoLoopStage({
       });
     }
     setCurrentDemoIdx(0);
-    setLikeCount(0);
-    setLikedInDemo(new Set());
-    setPreference(prev => ({ ...prev, likedSongs: [] }));
+    // V4 fix: do NOT reset likeCount or likedSongs - keep cumulative
     setProgress(40);
   };
 
@@ -406,11 +408,11 @@ export default function DemoLoopStage({
   const applyTuning = () => {
     if (!hasTuneFeedback || versions.length >= MAX_TUNE_ROUNDS) return;
 
-    // Collect all previous version keys
-    const prevKeys = collectPreviousVersionKeys(versions);
+    // V4 fix: only exclude disliked songs, not entire previous playlists
+    const dislikedKeys = collectDislikedSongKeys(versions);
 
-    // Generate new playlist excluding all previous versions
-    const newPl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, prevKeys);
+    // Generate new playlist excluding only disliked songs
+    const newPl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, dislikedKeys);
 
     if (newPl.length === 0) {
       showToast('宝～当前已无新的贴合歌曲啦🥺，可切换至之前版本查看或直接导出哦');

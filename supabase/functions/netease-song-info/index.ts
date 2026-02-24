@@ -23,6 +23,64 @@ interface SongResult {
   neteaseId: number | null;
 }
 
+// Normalize string for fuzzy matching
+function normalize(s: string): string {
+  return s.toLowerCase()
+    .replace(/[\s\-_·,.，。、（）()\[\]【】]/g, '')
+    .replace(/[''""\"\']/g, '');
+}
+
+// Check if search result matches query (fuzzy)
+function isGoodMatch(
+  querySongName: string,
+  queryArtist: string,
+  resultSongName: string,
+  resultArtists: string[]
+): boolean {
+  const qName = normalize(querySongName);
+  const rName = normalize(resultSongName);
+
+  // Song name must substantially overlap
+  const nameMatch = rName.includes(qName) || qName.includes(rName) ||
+    (qName.length > 2 && rName.length > 2 && (
+      levenshteinRatio(qName, rName) > 0.6
+    ));
+
+  if (!nameMatch) return false;
+
+  // Artist check: at least one artist token should match
+  const qArtistTokens = queryArtist.split(/[/,&、\s]+/).map(normalize).filter(Boolean);
+  const rArtistAll = resultArtists.map(normalize);
+
+  const artistMatch = qArtistTokens.some(qt =>
+    rArtistAll.some(ra => ra.includes(qt) || qt.includes(ra))
+  );
+
+  return artistMatch;
+}
+
+function levenshteinRatio(a: string, b: string): number {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  const dist = levenshtein(a, b);
+  return 1 - dist / maxLen;
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
 async function searchSong(song: SongQuery): Promise<SongResult> {
   const result: SongResult = {
     name: song.name,
@@ -34,24 +92,18 @@ async function searchSong(song: SongQuery): Promise<SongResult> {
 
   try {
     const keyword = `${song.name} ${song.artist}`;
-    let matchedSong: { id: number; album?: { picUrl?: string }; al?: { picUrl?: string } } | null = null;
+    let matchedSong: { id: number; name?: string; artists?: { name: string }[]; ar?: { name: string }[]; album?: { picUrl?: string }; al?: { picUrl?: string } } | null = null;
 
-    // Try multiple search endpoints
     const endpoints = [
       {
         url: 'https://music.163.com/api/cloudsearch/get/web',
         method: 'POST' as const,
-        body: `s=${encodeURIComponent(keyword)}&type=1&limit=3&offset=0`,
+        body: `s=${encodeURIComponent(keyword)}&type=1&limit=10&offset=0`,
       },
       {
         url: 'https://music.163.com/api/search/get',
         method: 'POST' as const,
-        body: `s=${encodeURIComponent(keyword)}&type=1&limit=3&offset=0`,
-      },
-      {
-        url: `https://music.163.com/api/search/get/web?s=${encodeURIComponent(keyword)}&type=1&limit=3&offset=0`,
-        method: 'GET' as const,
-        body: undefined,
+        body: `s=${encodeURIComponent(keyword)}&type=1&limit=10&offset=0`,
       },
     ];
 
@@ -61,27 +113,39 @@ async function searchSong(song: SongQuery): Promise<SongResult> {
           method: ep.method,
           headers: {
             ...NETEASE_HEADERS,
-            ...(ep.method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+            'Content-Type': 'application/x-www-form-urlencoded',
           },
           body: ep.body,
         });
         const data = await resp.json();
         const songs = data?.result?.songs;
         if (songs && songs.length > 0) {
-          matchedSong = songs[0];
-          console.log(`Found "${keyword}" via ${ep.url.split('?')[0]}, id=${matchedSong!.id}`);
-          break;
+          // Find best match among results
+          for (const s of songs) {
+            const sName = s.name || '';
+            const sArtists = (s.artists || s.ar || []).map((a: { name: string }) => a.name);
+            if (isGoodMatch(song.name, song.artist, sName, sArtists)) {
+              matchedSong = s;
+              console.log(`Matched "${keyword}" -> "${sName}" by ${sArtists.join('/')} (id=${s.id})`);
+              break;
+            }
+          }
+          if (matchedSong) break;
+          // Fallback: if no good match found in top 10, skip this endpoint
         }
       } catch {
         continue;
       }
     }
 
-    if (!matchedSong) return result;
+    if (!matchedSong) {
+      console.log(`No match found for "${keyword}"`);
+      return result;
+    }
 
     result.neteaseId = matchedSong.id;
 
-    // Get song detail (for album cover) and audio URL in parallel
+    // Get song detail and audio URL in parallel
     const [detailRes, audioRes] = await Promise.all([
       fetch(`https://music.163.com/api/song/detail/?ids=[${matchedSong.id}]&id=${matchedSong.id}`, {
         headers: NETEASE_HEADERS,
@@ -91,14 +155,12 @@ async function searchSong(song: SongQuery): Promise<SongResult> {
       }).then(r => r.json()).catch(() => null),
     ]);
 
-    // Album cover from detail API
     const detailSong = detailRes?.songs?.[0];
     const picUrl = detailSong?.album?.picUrl || detailSong?.al?.picUrl || matchedSong.album?.picUrl || matchedSong.al?.picUrl;
     if (picUrl) {
       result.coverUrl = `${picUrl}?param=300y300`;
     }
 
-    // Audio preview URL
     const urlInfo = audioRes?.data?.[0];
     if (urlInfo?.url) {
       result.previewUrl = urlInfo.url;
