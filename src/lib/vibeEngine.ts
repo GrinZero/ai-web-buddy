@@ -32,8 +32,16 @@ export interface DemoFeedback {
 
 export interface QuizQuestion {
   id: string;
+  type: 'preference' | 'empirical';
   question: string;
-  options: string[];
+  options: QuizOption[];
+  multiSelect: boolean;
+  swappable: boolean; // 偏好题可换题
+}
+
+export interface QuizOption {
+  label: string;
+  songRef?: string; // 实证题关联的歌曲
 }
 
 export interface UserPreference {
@@ -41,7 +49,7 @@ export interface UserPreference {
   dislikedRhythms: string[];
   dislikedStyles: string[];
   likedSongs: Song[];
-  quizAnswers: Record<string, string>;
+  quizAnswers: Record<string, string[]>; // 改为多选
 }
 
 // 7 个初始场景
@@ -132,7 +140,6 @@ export function parseSongs(text: string): Song[] {
 
     const separator = trimmed.includes(' - ') ? ' - ' : trimmed.includes(' – ') ? ' – ' : trimmed.includes(' — ') ? ' — ' : null;
     if (!separator) {
-      // try single dash
       const dashIdx = trimmed.indexOf('-');
       if (dashIdx <= 0 || dashIdx >= trimmed.length - 1) continue;
       const name = trimmed.substring(0, dashIdx).trim();
@@ -172,7 +179,6 @@ function simpleHash(str: string): number {
 // 为场景选择 Demo 歌曲
 export function selectDemoSongs(songs: Song[], scene: Scene, usedSongs: Set<string>): Song[] {
   const available = songs.filter(s => !usedSongs.has(`${s.name}-${s.artist}`));
-  // 用场景名和歌曲名做伪随机排序
   const sorted = [...available].sort((a, b) => {
     const hashA = simpleHash(a.name + scene.id);
     const hashB = simpleHash(b.name + scene.id);
@@ -181,17 +187,18 @@ export function selectDemoSongs(songs: Song[], scene: Scene, usedSongs: Set<stri
   return sorted.slice(0, 4);
 }
 
-// 根据偏好生成最终歌单
+// 根据偏好生成最终歌单（不限量）
 export function generatePlaylist(
   songs: Song[],
   scene: Scene,
   preference: UserPreference,
-  usedInOtherScenes: Set<string>
+  usedInOtherScenes: Set<string>,
+  demoSongKeys: Set<string> = new Set()
 ): Song[] {
   // Start with liked songs from demo
   const liked = preference.likedSongs.filter(s => !usedInOtherScenes.has(`${s.name}-${s.artist}`));
 
-  // Get remaining songs, excluding used ones
+  // Get remaining songs, excluding used ones and demo songs
   const remaining = songs.filter(s => {
     const key = `${s.name}-${s.artist}`;
     if (usedInOtherScenes.has(key)) return false;
@@ -206,79 +213,266 @@ export function generatePlaylist(
     return hashA - hashB;
   });
 
-  // Combine liked + sorted, max 10
-  const result = [...liked, ...sorted].slice(0, 10);
+  // 不限量：返回所有适配歌曲，liked优先
+  const result = [...liked, ...sorted];
   return result.length >= 3 ? result : result;
 }
 
-// 生成自适应选择题
-export function generateQuizQuestions(songCount: number, scene: Scene): QuizQuestion[] {
-  const baseQuestions: QuizQuestion[] = [
-    {
-      id: 'tempo-pref',
-      question: `在「${scene.name}」场景下，你更喜欢什么节奏的歌？`,
-      options: ['慢悠悠的', '中等节奏', '快节奏', '都可以'],
-    },
-    {
-      id: 'mood-pref',
-      question: `你希望「${scene.name}」的歌单整体氛围是？`,
-      options: ['治愈温暖', '活力满满', '安静平和', '自由随性'],
-    },
-    {
-      id: 'vocal-pref',
-      question: '你更偏爱哪种人声风格？',
-      options: ['温柔细腻', '有力量感', '慵懒随性', '清澈透亮'],
-    },
-    {
-      id: 'lang-pref',
-      question: '你更想听哪种语言的歌？',
-      options: ['中文歌', '英文歌', '日韩歌', '都可以'],
-    },
-    {
-      id: 'era-pref',
-      question: '你更喜欢哪个年代的歌？',
-      options: ['经典老歌', '近几年新歌', '最新热门', '无所谓'],
-    },
-    {
-      id: 'instrument-pref',
-      question: '你偏爱什么乐器伴奏？',
-      options: ['钢琴/吉他', '电子合成器', '弦乐', '都喜欢'],
-    },
-    {
-      id: 'repeat-pref',
-      question: '你会反复单曲循环一首歌吗？',
-      options: ['经常', '偶尔', '几乎不会', '看心情'],
-    },
-    {
-      id: 'discover-pref',
-      question: '你更倾向听熟悉的歌还是新歌？',
-      options: ['熟悉的老歌', '想发现新歌', '一半一半', '看场景'],
-    },
-  ];
+// ========== 选择题系统（V3 重构） ==========
 
-  let count = 4;
-  if (songCount >= 200 && songCount < 500) count = 5;
-  else if (songCount >= 500) count = 7;
+// 偏好题题库（核心4题 + 备用题）
+const PREFERENCE_QUESTIONS: Omit<QuizQuestion, 'id'>[] = [
+  {
+    type: 'preference',
+    question: '当前场景下，你更偏爱哪种感觉的歌曲？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '轻快不费脑' },
+      { label: '舒缓治愈' },
+      { label: '有轻微律动' },
+      { label: '温柔抒情' },
+    ],
+  },
+  {
+    type: 'preference',
+    question: '当前场景下，你能接受歌曲里有哪种"特别声音"？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '钢琴声' },
+      { label: '吉他声' },
+      { label: '电子合成器声' },
+      { label: '无特别乐器，纯人声为主' },
+    ],
+  },
+  {
+    type: 'preference',
+    question: '当前场景下，你偏爱歌曲的演唱风格是？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '轻柔女声' },
+      { label: '温柔男声' },
+      { label: '合唱/和声' },
+      { label: '无所谓，旋律好听即可' },
+    ],
+  },
+  {
+    type: 'preference',
+    question: '当前场景下，你能接受歌曲的情绪强度是？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '低强度（平缓、安静）' },
+      { label: '中强度（有情绪但不激烈）' },
+      { label: '较高强度（情绪饱满不炸耳）' },
+      { label: '不接受高强度' },
+    ],
+  },
+  // 备用题
+  {
+    type: 'preference',
+    question: '当前场景下，你更偏爱哪种歌词风格？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '直白易懂' },
+      { label: '文艺细腻' },
+      { label: '简洁轻快' },
+      { label: '无所谓，旋律大于歌词' },
+    ],
+  },
+  {
+    type: 'preference',
+    question: '当前场景下，你能接受歌曲里有说唱片段吗？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '完全接受' },
+      { label: '偶尔接受' },
+      { label: '不太接受' },
+      { label: '完全不接受' },
+    ],
+  },
+  {
+    type: 'preference',
+    question: '当前场景下，你偏爱歌曲的编曲风格是？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '简约编曲（突出旋律）' },
+      { label: '丰富编曲（多种乐器）' },
+      { label: '清新编曲（轻快简单）' },
+    ],
+  },
+  {
+    type: 'preference',
+    question: '当前场景下，你更偏爱新歌还是老歌？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '偏爱新歌（近1-2年）' },
+      { label: '偏爱老歌（经典怀旧）' },
+      { label: '都可以' },
+      { label: '偏向经典老歌' },
+    ],
+  },
+];
 
-  return baseQuestions.slice(0, count);
+// 实证题模板
+const EMPIRICAL_TEMPLATES = [
+  '当前场景下，你更喜欢以下哪几首歌曲？',
+  '当前场景下，你觉得以下哪几首歌曲更贴合你的 Vibe？',
+  '当前场景下，你愿意在专属歌单中听到以下哪几首歌曲？',
+  '当前场景下，以下哪几首歌曲的风格更符合你的偏好？',
+  '当前场景下，你更想听到以下哪几首歌曲？',
+  '当前场景下，你觉得以下哪几首更适配这个场景？',
+];
+
+// 生成实证题（使用用户歌单中的歌曲，排除Demo）
+function generateEmpiricalQuestions(
+  songs: Song[],
+  demoKeys: Set<string>,
+  usedSongs: Set<string>,
+  scene: Scene,
+  count: number
+): QuizQuestion[] {
+  // 可用歌曲池：排除Demo和已使用的
+  const available = songs.filter(s => {
+    const key = `${s.name}-${s.artist}`;
+    return !demoKeys.has(key) && !usedSongs.has(key);
+  });
+
+  // 伪随机排序
+  const shuffled = [...available].sort((a, b) => {
+    const hashA = simpleHash(a.name + scene.id + 'empirical');
+    const hashB = simpleHash(b.name + scene.id + 'empirical');
+    return hashA - hashB;
+  });
+
+  const questions: QuizQuestion[] = [];
+  let songIdx = 0;
+
+  for (let i = 0; i < count && songIdx < shuffled.length; i++) {
+    const optionCount = 3 + (i % 2); // 3-4 options per question
+    const questionSongs = shuffled.slice(songIdx, songIdx + optionCount);
+    songIdx += optionCount;
+
+    if (questionSongs.length < 2) break;
+
+    questions.push({
+      id: `empirical-${i}`,
+      type: 'empirical',
+      question: EMPIRICAL_TEMPLATES[i % EMPIRICAL_TEMPLATES.length],
+      multiSelect: true,
+      swappable: false,
+      options: questionSongs.map(s => ({
+        label: `${s.name} - ${s.artist}`,
+        songRef: `${s.name}-${s.artist}`,
+      })),
+    });
+  }
+
+  return questions;
 }
 
-// 不喜欢原因选项
-export const DISLIKE_REASONS = {
+// 生成自适应选择题（V3: 偏好题1题 + 实证题2-3题）
+export function generateQuizQuestions(
+  songs: Song[],
+  scene: Scene,
+  demoKeys: Set<string>,
+  usedSongs: Set<string>
+): QuizQuestion[] {
+  const songCount = songs.length;
+
+  // 确定实证题数量
+  let empiricalCount = 2;
+  if (songCount >= 500) empiricalCount = 3;
+
+  // 偏好题：从题库随机选1题
+  const prefIdx = simpleHash(scene.id + 'pref') % Math.min(4, PREFERENCE_QUESTIONS.length);
+  const prefQuestion: QuizQuestion = {
+    ...PREFERENCE_QUESTIONS[prefIdx],
+    id: 'pref-0',
+  };
+
+  // 实证题
+  const empiricalQuestions = generateEmpiricalQuestions(songs, demoKeys, usedSongs, scene, empiricalCount);
+
+  return [prefQuestion, ...empiricalQuestions];
+}
+
+// 获取备用偏好题（换题用）
+export function getSwapPreferenceQuestion(currentId: string, usedIds: Set<string>): QuizQuestion | null {
+  for (let i = 0; i < PREFERENCE_QUESTIONS.length; i++) {
+    const id = `pref-swap-${i}`;
+    if (id === currentId || usedIds.has(id)) continue;
+    return { ...PREFERENCE_QUESTIONS[i], id };
+  }
+  return null;
+}
+
+// 不喜欢原因选项（V3: 增加解释和示例）
+export interface DislikeDetail {
+  label: string;
+  explanation: string;
+  example: string;
+}
+
+export interface DislikeCategory {
+  label: string;
+  icon: string;
+  explanation: string;
+  example: string;
+  details: DislikeDetail[];
+  hasFollowUp: boolean; // 类型不对味需要追问
+}
+
+export const DISLIKE_REASONS: Record<'type' | 'rhythm' | 'style', DislikeCategory> = {
   type: {
     label: '类型不对味',
     icon: '🎵',
-    details: ['太 R&B', '太说唱', '太流行', '太国风', '太电子', '曲风不符'],
+    explanation: '歌曲的曲风/类型不符合你的偏好',
+    example: '你想要治愈轻音，这首歌是激烈说唱',
+    hasFollowUp: true,
+    details: [
+      { label: '太 R&B', explanation: 'R&B 曲风太浓，不符合当前场景', example: '通勤场景想要轻快流行，这首歌 R&B 节奏太拖沓' },
+      { label: '太说唱', explanation: '说唱片段过多，不贴合偏好', example: '睡前场景想要安静歌曲，这首歌全程说唱太吵' },
+      { label: '太流行', explanation: '流行感太强，过于大众化', example: '宅家场景想要小众旋律，这首歌是热门流行曲太洗脑' },
+      { label: '太国风', explanation: '国风元素太浓，不符合预期', example: '健身场景想要有活力歌曲，这首歌国风旋律太舒缓' },
+      { label: '太电子', explanation: '电子合成器声音太突出', example: '学习场景想要无干扰歌曲，这首歌电子音效太突兀' },
+      { label: '曲风不符', explanation: '以上都不是，可自行说明曲风问题', example: '' },
+    ],
   },
   rhythm: {
     label: '节奏不得劲',
     icon: '🥁',
-    details: ['鼓点太紧凑', '鼓点太舒缓', '太炸耳', '太沉闷', '律动不足'],
+    explanation: '歌曲的鼓点/节奏不贴合场景',
+    example: '学习场景想要舒缓节奏，这首歌鼓点太紧凑',
+    hasFollowUp: false,
+    details: [
+      { label: '鼓点太紧凑', explanation: '鼓点密集，节奏太快', example: '下班场景想要放松，这首歌鼓点太紧凑让人紧张' },
+      { label: '鼓点太舒缓', explanation: '鼓点太淡，节奏太慢', example: '健身场景想要有律动，这首歌鼓点太舒缓没活力' },
+      { label: '太炸耳', explanation: '节奏太激烈，声音太响', example: '睡前场景想要轻柔，这首歌节奏太炸耳影响放松' },
+      { label: '太沉闷', explanation: '节奏拖沓，无起伏', example: '通勤场景想要轻快，这首歌节奏太沉闷让人犯困' },
+      { label: '律动不足', explanation: '没有明显节奏起伏，太平淡', example: '自驾场景想要有节奏，这首歌律动不足太单调' },
+    ],
   },
   style: {
     label: '风格不戳我',
     icon: '💫',
-    details: ['太甜蜜', '太伤感', '太酷炫', '太温柔', '太励志', '风格不符'],
+    explanation: '歌曲的主题/情绪不符合你的预期',
+    example: '睡前场景想要轻柔旋律，这首歌太伤感压抑',
+    hasFollowUp: false,
+    details: [
+      { label: '太甜蜜', explanation: '情歌甜度太高，不符合场景', example: '学习场景想要专注，这首歌甜蜜歌词太分心' },
+      { label: '太伤感', explanation: '情绪太压抑，太伤感', example: '晨起通勤想要治愈，这首歌伤感情绪太影响心情' },
+      { label: '太酷炫', explanation: '风格太张扬，不贴合调性', example: '宅家场景想要温柔，这首歌风格太酷炫太有攻击性' },
+      { label: '太温柔', explanation: '过于柔和，缺乏张力', example: '健身场景想要有活力，这首歌太温柔没干劲' },
+      { label: '太励志', explanation: '励志感太强，太刻意', example: '睡前场景想要放松，这首歌励志歌词太有压迫感' },
+      { label: '风格不符', explanation: '以上都不是，可自行说明风格问题', example: '' },
+    ],
   },
 };
 
@@ -298,6 +492,11 @@ export const ENCOURAGEMENTS = {
     '搞定✅！专属你的场景 BGM 已上线～',
     '完成啦🎶！快听听你的专属歌单吧～',
     '好耶🥳！这份歌单就是为你量身打造的～',
+  ],
+  tuneComplete: [
+    '歌单优化完成 ✅，更懂你的 Vibe 啦～',
+    '调整好了🎵！这次应该更合你口味了～',
+    '优化搞定✨！歌单越来越贴合你啦～',
   ],
 };
 
