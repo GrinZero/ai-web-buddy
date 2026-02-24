@@ -1,1 +1,4 @@
 project_id = "bkirrikaeesezmhtqdqd"
+
+[functions.netease-song-info]
+verify_jwt = false
