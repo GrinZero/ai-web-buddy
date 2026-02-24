@@ -5,10 +5,13 @@ import {
   type Scene,
   type UserPreference,
   type QuizQuestion,
-  selectDemoSongs,
+  type PlaylistVersion,
+  selectDemoPool,
+  selectDemoBatch,
   generatePlaylist,
   generateQuizQuestions,
   getSwapPreferenceQuestion,
+  collectPreviousVersionKeys,
   DISLIKE_REASONS,
   ENCOURAGEMENTS,
   getAlbumGradient,
@@ -36,9 +39,14 @@ export default function DemoLoopStage({
   onComplete, onBackToScenes, onRestart,
 }: DemoLoopStageProps) {
   const [subStage, setSubStage] = useState<SubStage>('rules');
-  const [demoSongs, setDemoSongs] = useState<Song[]>([]);
+  
+  // V4: Demo pool system
+  const [demoPool, setDemoPool] = useState<Song[]>([]);
+  const [demoBatch, setDemoBatch] = useState<Song[]>([]);
+  const [shownDemoKeys, setShownDemoKeys] = useState<Set<string>>(new Set());
   const [currentDemoIdx, setCurrentDemoIdx] = useState(0);
   const [likeCount, setLikeCount] = useState(0);
+  const [likedInDemo, setLikedInDemo] = useState<Set<string>>(new Set()); // track liked for undo
   const [preference, setPreference] = useState<UserPreference>({
     dislikedGenres: [], dislikedRhythms: [], dislikedStyles: [],
     likedSongs: [], quizAnswers: {},
@@ -53,6 +61,8 @@ export default function DemoLoopStage({
   const [encouragement, setEncouragement] = useState<string | null>(null);
   const [showNeedMoreLikes, setShowNeedMoreLikes] = useState(false);
   const [reEvalCount, setReEvalCount] = useState(0);
+  const [undoTimer, setUndoTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const [canUndoLike, setCanUndoLike] = useState(false);
 
   // Quiz state
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
@@ -61,42 +71,80 @@ export default function DemoLoopStage({
   const [usedPrefIds, setUsedPrefIds] = useState<Set<string>>(new Set());
   const [swapToast, setSwapToast] = useState<string | null>(null);
 
-  // Playlist state
-  const [playlist, setPlaylist] = useState<Song[]>([]);
+  // V4: Playlist version system
+  const [versions, setVersions] = useState<PlaylistVersion[]>([]);
+  const [currentVersion, setCurrentVersion] = useState(0); // index into versions
   const [showAllSongs, setShowAllSongs] = useState(false);
-  const [tuneRound, setTuneRound] = useState(0);
-  const [tuneLikes, setTuneLikes] = useState<Record<string, { sameStyle: boolean; sameArtist: boolean }>>({});
-  const [tuneDislikes, setTuneDislikes] = useState<Record<string, 'single' | 'style' | null>>({});
   const [showLikeOptions, setShowLikeOptions] = useState<string | null>(null);
   const [showDislikeOptions, setShowDislikeOptions] = useState<string | null>(null);
+  const [actionToast, setActionToast] = useState<string | null>(null);
 
   const [progress, setProgress] = useState(0);
 
-  // Demo song keys for quiz exclusion
-  const demoKeys = useMemo(() => new Set(demoSongs.map(s => `${s.name}-${s.artist}`)), [demoSongs]);
+  // All demo keys for quiz exclusion
+  const allDemoKeys = useMemo(() => new Set(demoPool.map(s => `${s.name}-${s.artist}`)), [demoPool]);
 
-  // Initialize demos
+  // Current version data
+  const currentVersionData = versions[currentVersion];
+  const playlist = currentVersionData?.playlist || [];
+  const tuneLikes = currentVersionData?.tuneLikes || {};
+  const tuneDislikes = currentVersionData?.tuneDislikes || {};
+
+  const displayedPlaylist = showAllSongs ? playlist : playlist.slice(0, 10);
+
+  // ========== Demo init ==========
   const startDemos = useCallback(() => {
-    const demos = selectDemoSongs(songs, scene, usedSongs);
-    setDemoSongs(demos);
+    const pool = selectDemoPool(songs, scene, usedSongs);
+    setDemoPool(pool);
+    const batch = selectDemoBatch(pool, new Set(), Math.min(pool.length, 6));
+    setDemoBatch(batch);
+    setShownDemoKeys(new Set(batch.map(s => `${s.name}-${s.artist}`)));
     setCurrentDemoIdx(0);
     setLikeCount(0);
+    setLikedInDemo(new Set());
+    setCanUndoLike(false);
     setSubStage('demo');
-    setProgress(20);
+    setProgress(40);
   }, [songs, scene, usedSongs]);
 
   // ========== Demo handlers ==========
+  const currentDemo = demoBatch[currentDemoIdx];
+  const skipLikeRequirement = demoPool.length < MIN_LIKES;
+
   const handleLike = () => {
-    const song = demoSongs[currentDemoIdx];
-    if (song) {
-      setPreference(prev => ({ ...prev, likedSongs: [...prev.likedSongs, song] }));
-      setLikeCount(prev => prev + 1);
-    }
+    const song = currentDemo;
+    if (!song) return;
+    const key = `${song.name}-${song.artist}`;
+    
+    setPreference(prev => ({ ...prev, likedSongs: [...prev.likedSongs, song] }));
+    setLikeCount(prev => prev + 1);
+    setLikedInDemo(prev => new Set(prev).add(key));
+    
     setShowHeartAnim(true);
+    setCanUndoLike(true);
+    
+    // Allow undo within 3 seconds
+    if (undoTimer) clearTimeout(undoTimer);
+    const timer = setTimeout(() => setCanUndoLike(false), 3000);
+    setUndoTimer(timer);
+    
     setTimeout(() => {
       setShowHeartAnim(false);
       advanceDemo();
     }, 800);
+  };
+
+  const handleUndoLike = () => {
+    if (!canUndoLike || !currentDemo) return;
+    const key = `${currentDemo.name}-${currentDemo.artist}`;
+    setPreference(prev => ({
+      ...prev,
+      likedSongs: prev.likedSongs.filter(s => `${s.name}-${s.artist}` !== key),
+    }));
+    setLikeCount(prev => Math.max(0, prev - 1));
+    setLikedInDemo(prev => { const n = new Set(prev); n.delete(key); return n; });
+    setCanUndoLike(false);
+    if (undoTimer) clearTimeout(undoTimer);
   };
 
   const handleDislike = () => {
@@ -133,22 +181,25 @@ export default function DemoLoopStage({
   };
 
   const advanceDemo = () => {
-    if (currentDemoIdx < 3) {
+    setCanUndoLike(false);
+    if (currentDemoIdx < demoBatch.length - 1) {
       setCurrentDemoIdx(prev => prev + 1);
     } else {
-      // All 4 demos done - check like count
-      if (likeCount + 1 >= MIN_LIKES || (likeCount >= MIN_LIKES)) {
+      // All demos in batch done
+      const currentLikes = likeCount + (likedInDemo.has(`${currentDemo?.name}-${currentDemo?.artist}`) ? 0 : 0);
+      if (currentLikes >= MIN_LIKES || skipLikeRequirement) {
         setProgress(50);
+        if (skipLikeRequirement) {
+          showToast('当前场景适配歌曲较少，已为你跳过喜欢数量要求，继续生成歌单哦✨');
+        }
         showEncouragementMsg('demoComplete', () => {
-          // Generate quiz questions
-          const qs = generateQuizQuestions(songs, scene, demoKeys, usedSongs);
+          const qs = generateQuizQuestions(songs, scene, allDemoKeys, usedSongs);
           setQuizQuestions(qs);
           setQuizIdx(0);
           setQuizSelections({});
           setSubStage('quiz');
         });
       } else {
-        // Need more likes
         setShowNeedMoreLikes(true);
       }
     }
@@ -157,10 +208,26 @@ export default function DemoLoopStage({
   const handleReEvaluate = () => {
     setShowNeedMoreLikes(false);
     setReEvalCount(prev => prev + 1);
+    // Get new batch from pool, excluding already shown
+    const newBatch = selectDemoBatch(demoPool, shownDemoKeys, Math.min(demoPool.length - shownDemoKeys.size, 6));
+    if (newBatch.length === 0) {
+      // All pool exhausted, reset shown keys and reshuffle
+      const freshBatch = selectDemoBatch(demoPool, new Set(), Math.min(demoPool.length, 6));
+      setDemoBatch(freshBatch);
+      setShownDemoKeys(new Set(freshBatch.map(s => `${s.name}-${s.artist}`)));
+    } else {
+      setDemoBatch(newBatch);
+      setShownDemoKeys(prev => {
+        const next = new Set(prev);
+        newBatch.forEach(s => next.add(`${s.name}-${s.artist}`));
+        return next;
+      });
+    }
     setCurrentDemoIdx(0);
     setLikeCount(0);
+    setLikedInDemo(new Set());
     setPreference(prev => ({ ...prev, likedSongs: [] }));
-    setProgress(20);
+    setProgress(40);
   };
 
   // ========== Quiz handlers ==========
@@ -169,17 +236,13 @@ export default function DemoLoopStage({
   const toggleQuizOption = (questionId: string, option: string) => {
     setQuizSelections(prev => {
       const current = new Set(prev[questionId] || []);
-      if (current.has(option)) {
-        current.delete(option);
-      } else {
-        current.add(option);
-      }
+      if (current.has(option)) current.delete(option);
+      else current.add(option);
       return { ...prev, [questionId]: current };
     });
   };
 
   const handleQuizNext = () => {
-    // Save current answer
     const sel = quizSelections[currentQuiz.id];
     if (sel && sel.size > 0) {
       setPreference(prev => ({
@@ -190,14 +253,21 @@ export default function DemoLoopStage({
 
     if (quizIdx < quizQuestions.length - 1) {
       setQuizIdx(prev => prev + 1);
+      setProgress(50 + Math.round(((quizIdx + 1) / quizQuestions.length) * 30));
     } else {
-      // Quiz done
       setProgress(80);
       showEncouragementMsg('quizComplete', () => {
-        const pl = generatePlaylist(songs, scene, preference, usedSongs, demoKeys);
-        setPlaylist(pl);
-        setTuneRound(0);
-        resetTuneFeedback();
+        const pl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, new Set());
+        const v: PlaylistVersion = {
+          version: 1,
+          playlist: pl,
+          tuneLikes: {},
+          tuneDislikes: {},
+          allSongKeys: new Set(pl.map(s => `${s.name}-${s.artist}`)),
+        };
+        setVersions([v]);
+        setCurrentVersion(0);
+        setShowAllSongs(false);
         setProgress(100);
         setSubStage('playlist');
         setTimeout(() => showEncouragementMsg('playlistReady', () => {}), 500);
@@ -223,87 +293,132 @@ export default function DemoLoopStage({
     }
   };
 
-  // ========== Playlist tune handlers ==========
-  const resetTuneFeedback = () => {
-    setTuneLikes({});
-    setTuneDislikes({});
-    setShowLikeOptions(null);
-    setShowDislikeOptions(null);
-    setShowAllSongs(false);
+  // ========== V4: Playlist version handlers ==========
+  const showToast = (msg: string) => {
+    setActionToast(msg);
+    setTimeout(() => setActionToast(null), 2000);
+  };
+
+  const updateCurrentVersion = (updater: (v: PlaylistVersion) => PlaylistVersion) => {
+    setVersions(prev => prev.map((v, i) => i === currentVersion ? updater(v) : v));
   };
 
   const toggleLike = (key: string) => {
-    if (tuneLikes[key]) {
-      setTuneLikes(prev => { const n = { ...prev }; delete n[key]; return n; });
+    const isLiked = !!tuneLikes[key];
+    if (isLiked) {
+      // Cancel like - remove added songs
+      updateCurrentVersion(v => {
+        const newLikes = { ...v.tuneLikes };
+        delete newLikes[key];
+        return { ...v, tuneLikes: newLikes };
+      });
       setShowLikeOptions(null);
+      showToast('已取消操作哦✨');
     } else {
       // Remove dislike if any
-      setTuneDislikes(prev => { const n = { ...prev }; delete n[key]; return n; });
+      updateCurrentVersion(v => {
+        const newDislikes = { ...v.tuneDislikes };
+        delete newDislikes[key];
+        return { ...v, tuneDislikes: newDislikes, tuneLikes: { ...v.tuneLikes, [key]: { sameStyle: false, sameArtist: false } } };
+      });
       setShowDislikeOptions(null);
-      setTuneLikes(prev => ({ ...prev, [key]: { sameStyle: false, sameArtist: false } }));
       setShowLikeOptions(key);
     }
   };
 
   const setLikeOption = (key: string, option: 'sameStyle' | 'sameArtist') => {
-    setTuneLikes(prev => ({
-      ...prev,
-      [key]: { ...prev[key], [option]: !prev[key]?.[option] },
+    updateCurrentVersion(v => ({
+      ...v,
+      tuneLikes: {
+        ...v.tuneLikes,
+        [key]: { ...v.tuneLikes[key], [option]: !v.tuneLikes[key]?.[option] },
+      },
     }));
   };
 
-  const confirmLikeOptions = () => setShowLikeOptions(null);
+  const confirmLikeOptions = () => {
+    setShowLikeOptions(null);
+    showToast('已为你新增同类型歌曲✅');
+  };
 
   const toggleDislike = (key: string) => {
-    if (tuneDislikes[key]) {
-      setTuneDislikes(prev => { const n = { ...prev }; delete n[key]; return n; });
+    const isDisliked = tuneDislikes[key] !== undefined && tuneDislikes[key] !== null;
+    if (isDisliked) {
+      updateCurrentVersion(v => {
+        const newDislikes = { ...v.tuneDislikes };
+        delete newDislikes[key];
+        return { ...v, tuneDislikes: newDislikes };
+      });
       setShowDislikeOptions(null);
+      showToast('已恢复删除的歌曲哦✨');
     } else {
       // Remove like if any
-      setTuneLikes(prev => { const n = { ...prev }; delete n[key]; return n; });
+      updateCurrentVersion(v => {
+        const newLikes = { ...v.tuneLikes };
+        delete newLikes[key];
+        return { ...v, tuneLikes: newLikes, tuneDislikes: { ...v.tuneDislikes, [key]: null } };
+      });
       setShowLikeOptions(null);
-      setTuneDislikes(prev => ({ ...prev, [key]: null }));
       setShowDislikeOptions(key);
     }
   };
 
   const setDislikeOption = (key: string, option: 'single' | 'style') => {
-    setTuneDislikes(prev => ({ ...prev, [key]: option }));
+    updateCurrentVersion(v => ({ ...v, tuneDislikes: { ...v.tuneDislikes, [key]: option } }));
     setShowDislikeOptions(null);
+    showToast(option === 'single' ? '已删除这首歌曲✅' : '已剔除该风格所有歌曲✅');
   };
 
   const hasTuneFeedback = Object.keys(tuneLikes).length > 0 || Object.values(tuneDislikes).some(v => v !== null);
 
+  // V4: Apply tuning -> generate new version
   const applyTuning = () => {
-    if (!hasTuneFeedback) return;
+    if (!hasTuneFeedback || versions.length >= MAX_TUNE_ROUNDS) return;
 
-    const dislikedKeys = new Set(
-      Object.entries(tuneDislikes).filter(([, v]) => v !== null).map(([k]) => k)
-    );
+    // Collect all previous version keys
+    const prevKeys = collectPreviousVersionKeys(versions);
 
-    // Keep songs not disliked
-    const kept = playlist.filter(s => !dislikedKeys.has(`${s.name}-${s.artist}`));
+    // Generate new playlist excluding all previous versions
+    const newPl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, prevKeys);
 
-    const usedKeys = new Set([
-      ...Array.from(usedSongs),
-      ...kept.map(s => `${s.name}-${s.artist}`),
-    ]);
+    if (newPl.length === 0) {
+      showToast('宝～当前已无新的贴合歌曲啦🥺，可切换至之前版本查看或直接导出哦');
+      return;
+    }
 
-    // Fill replacements
-    const remaining = songs.filter(s => !usedKeys.has(`${s.name}-${s.artist}`));
-    const needed = Math.max(0, playlist.length - kept.length);
-    const replacements = remaining.slice(0, needed);
+    const newVersion: PlaylistVersion = {
+      version: versions.length + 1,
+      playlist: newPl,
+      tuneLikes: {},
+      tuneDislikes: {},
+      allSongKeys: new Set(newPl.map(s => `${s.name}-${s.artist}`)),
+    };
 
-    const newPlaylist = [...kept, ...replacements];
-    setPlaylist(newPlaylist);
-    setTuneRound(prev => prev + 1);
-    resetTuneFeedback();
+    setVersions(prev => [...prev, newVersion]);
+    setCurrentVersion(versions.length);
+    setShowAllSongs(false);
+    setShowLikeOptions(null);
+    setShowDislikeOptions(null);
     showEncouragementMsg('tuneComplete', () => {});
+  };
+
+  // V4: Reset current version
+  const resetCurrentVersion = () => {
+    updateCurrentVersion(v => ({
+      ...v,
+      tuneLikes: {},
+      tuneDislikes: {},
+    }));
+    setShowLikeOptions(null);
+    setShowDislikeOptions(null);
+    showToast('当前版本已重置✨，可重新进行优化哦');
   };
 
   const handleReEvaluateFromPlaylist = () => {
     setSubStage('rules');
     setProgress(0);
+    setVersions([]);
+    setCurrentVersion(0);
     setPreference({
       dislikedGenres: [], dislikedRhythms: [], dislikedStyles: [],
       likedSongs: [], quizAnswers: {},
@@ -311,7 +426,7 @@ export default function DemoLoopStage({
   };
 
   const handleCompleteScene = () => {
-    onComplete({ scene, playlist });
+    onComplete({ scene, playlist: versions[currentVersion]?.playlist || [] });
   };
 
   const showEncouragementMsg = (type: keyof typeof ENCOURAGEMENTS, callback: () => void) => {
@@ -323,9 +438,6 @@ export default function DemoLoopStage({
       callback();
     }, 2500);
   };
-
-  const currentDemo = demoSongs[currentDemoIdx];
-  const displayedPlaylist = showAllSongs ? playlist : playlist.slice(0, 10);
 
   return (
     <motion.div
@@ -350,7 +462,11 @@ export default function DemoLoopStage({
       {subStage === 'demo' && (
         <div className="w-full max-w-2xl mb-2 text-center text-xs text-muted-foreground">
           已喜欢：{likeCount}/{MIN_LIKES} 首
-          {likeCount >= MIN_LIKES && <span className="text-primary ml-1">（满足条件，可进入下一步✨）</span>}
+          {likeCount >= MIN_LIKES ? (
+            <span className="text-primary ml-1">（满足条件，可进入下一步✨）</span>
+          ) : (
+            <span className="ml-1">（需至少喜欢 {MIN_LIKES} 首才可继续）</span>
+          )}
         </div>
       )}
 
@@ -358,9 +474,9 @@ export default function DemoLoopStage({
       <div className="w-full max-w-2xl mb-8">
         <div className="flex justify-between text-xs text-muted-foreground mb-1">
           <span>
-            {subStage === 'demo' && `Demo 评价中 ${currentDemoIdx + 1}/4`}
+            {subStage === 'demo' && `Demo 评价中 ${currentDemoIdx + 1}/${demoBatch.length}`}
             {subStage === 'quiz' && `选择题 ${quizIdx + 1}/${quizQuestions.length}`}
-            {subStage === 'playlist' && (tuneRound > 0 ? `第${tuneRound + 1}版歌单 · 共 ${playlist.length} 首` : `第一版歌单 · 共 ${playlist.length} 首`)}
+            {subStage === 'playlist' && `第${(currentVersion || 0) + 1}版歌单 · 共 ${playlist.length} 首`}
             {subStage === 'rules' && '准备开始'}
           </span>
           <span>{progress}%</span>
@@ -386,7 +502,8 @@ export default function DemoLoopStage({
               exit={{ opacity: 0, scale: 0.95 }}
               className="w-full max-w-md rounded-2xl border border-border bg-popover/90 p-8 backdrop-blur-sm text-center"
             >
-              <p className="mb-6 text-lg text-foreground">为了更懂你的 Vibe，帮你生成超精准歌单～</p>
+              <h2 className="mb-4 text-xl font-semibold text-foreground font-serif">听听这些歌，选你喜欢的吧</h2>
+              <p className="mb-6 text-sm text-muted-foreground">为了更懂你的 Vibe，帮你生成超精准歌单～</p>
               <div className="mb-6 space-y-3 text-left">
                 <div className="flex items-center gap-3 rounded-xl bg-vibe-pink-light p-3">
                   <span className="text-2xl">❤️</span>
@@ -413,7 +530,7 @@ export default function DemoLoopStage({
             </motion.div>
           )}
 
-          {/* ========== Demo display with left/right buttons ========== */}
+          {/* ========== Demo display ========== */}
           {subStage === 'demo' && currentDemo && (
             <motion.div
               key={`demo-${currentDemoIdx}`}
@@ -422,15 +539,18 @@ export default function DemoLoopStage({
               exit={{ opacity: 0, x: -40 }}
               className="flex flex-col items-center"
             >
-              {/* Demo card with side buttons */}
               <div className="flex items-center gap-6">
                 {/* Like button (left) */}
                 <button
                   onClick={handleLike}
                   className="group flex flex-col items-center gap-1"
                 >
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-primary/30 bg-card text-xl transition-all group-hover:scale-110 group-hover:border-primary group-hover:bg-vibe-pink-light">
-                    ❤️
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-full border-2 text-xl transition-all group-hover:scale-110 ${
+                    likedInDemo.has(`${currentDemo.name}-${currentDemo.artist}`)
+                      ? 'border-primary bg-vibe-pink-light'
+                      : 'border-primary/30 bg-card group-hover:border-primary group-hover:bg-vibe-pink-light'
+                  }`}>
+                    {likedInDemo.has(`${currentDemo.name}-${currentDemo.artist}`) ? '❤️' : '🤍'}
                   </div>
                   <span className="text-[10px] text-muted-foreground">很喜欢·匹配</span>
                 </button>
@@ -471,6 +591,18 @@ export default function DemoLoopStage({
               <h3 className="mt-6 text-xl font-medium text-foreground">{currentDemo.name}</h3>
               <p className="mt-1 text-muted-foreground">{currentDemo.artist}</p>
 
+              {/* Undo like hint */}
+              {canUndoLike && (
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  onClick={handleUndoLike}
+                  className="mt-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  3秒内可取消喜欢
+                </motion.button>
+              )}
+
               {/* ===== Dislike popup ===== */}
               <AnimatePresence>
                 {showDislikePopup && (
@@ -482,7 +614,6 @@ export default function DemoLoopStage({
                     onClick={(e) => e.target === e.currentTarget && null}
                   >
                     <div className="w-full max-w-sm rounded-2xl border border-border bg-popover p-6">
-                      {/* Back button */}
                       <button
                         onClick={() => { setShowDislikePopup(false); setDislikeCategory(null); setShowFollowUp(false); }}
                         className="mb-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -590,7 +721,7 @@ export default function DemoLoopStage({
             </motion.div>
           )}
 
-          {/* ========== Quiz (multi-select + swap) ========== */}
+          {/* ========== Quiz ========== */}
           {subStage === 'quiz' && currentQuiz && (
             <motion.div
               key={`quiz-${quizIdx}-${currentQuiz.id}`}
@@ -662,7 +793,6 @@ export default function DemoLoopStage({
                   </div>
                 </div>
 
-                {/* Swap toast */}
                 <AnimatePresence>
                   {swapToast && (
                     <motion.p
@@ -679,37 +809,58 @@ export default function DemoLoopStage({
             </motion.div>
           )}
 
-          {/* ========== Playlist (unlimited + like/dislike sub-options) ========== */}
-          {subStage === 'playlist' && (
+          {/* ========== Playlist with version system ========== */}
+          {subStage === 'playlist' && currentVersionData && (
             <motion.div
               key="playlist"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               className="w-full max-w-lg"
             >
+              {/* Version header */}
               <div className="mb-4 text-center">
                 <span className="text-3xl">{scene.icon}</span>
                 <h2 className="mt-2 text-xl font-semibold text-foreground">
                   {scene.name} · 共 {playlist.length} 首
                 </h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {tuneRound === 0
-                    ? '第一版歌单来啦🥰，点击歌曲右侧按钮可优化哦'
-                    : `第${tuneRound + 1}版歌单`}
+
+                {/* Version tabs */}
+                {versions.length > 1 && (
+                  <div className="mt-3 flex justify-center gap-2">
+                    {versions.map((v, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { setCurrentVersion(i); setShowAllSongs(false); setShowLikeOptions(null); setShowDislikeOptions(null); }}
+                        className={`rounded-lg px-3 py-1 text-xs transition-all ${
+                          i === currentVersion
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-secondary text-muted-foreground hover:bg-primary/20'
+                        }`}
+                      >
+                        第{v.version}版
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {versions.length === 1
+                    ? '第一版歌单来啦🥰，歌单不限量，点击歌曲右侧按钮可优化所有贴合歌曲哦'
+                    : `第${currentVersionData.version}版歌单`}
                 </p>
-                {tuneRound < MAX_TUNE_ROUNDS && (
+                {versions.length < MAX_TUNE_ROUNDS && (
                   <p className="mt-1 text-xs text-muted-foreground/70">
                     ❤️ 喜欢（想要更多同风格/同歌手）&nbsp;&nbsp;✕ 不喜欢（仅这首/同风格）
                   </p>
                 )}
               </div>
 
+              {/* Song list */}
               <div className="space-y-2">
                 {displayedPlaylist.map((song, i) => {
                   const key = `${song.name}-${song.artist}`;
                   const isLiked = !!tuneLikes[key];
                   const isDisliked = tuneDislikes[key] !== undefined && tuneDislikes[key] !== null;
-                  const isDislikedPending = tuneDislikes[key] === null;
                   return (
                     <motion.div
                       key={key}
@@ -735,7 +886,7 @@ export default function DemoLoopStage({
                           <p className="truncate text-sm font-medium text-foreground">{song.name}</p>
                           <p className="truncate text-xs text-muted-foreground">{song.artist}</p>
                         </div>
-                        {tuneRound < MAX_TUNE_ROUNDS && (
+                        {versions.length <= MAX_TUNE_ROUNDS && (
                           <div className="flex gap-1.5 shrink-0">
                             <button
                               onClick={() => toggleLike(key)}
@@ -750,7 +901,7 @@ export default function DemoLoopStage({
                             <button
                               onClick={() => toggleDislike(key)}
                               className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-all ${
-                                isDisliked || isDislikedPending
+                                isDisliked
                                   ? 'bg-muted-foreground/30 text-foreground'
                                   : 'bg-secondary text-muted-foreground hover:bg-destructive/20'
                               }`}
@@ -848,17 +999,26 @@ export default function DemoLoopStage({
 
               {/* Action buttons */}
               <div className="mt-8 flex flex-wrap justify-center gap-3">
-                {tuneRound < MAX_TUNE_ROUNDS && hasTuneFeedback && (
+                {versions.length < MAX_TUNE_ROUNDS && hasTuneFeedback && (
                   <button
                     onClick={applyTuning}
                     className="rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-vibe-pink-hover transition-colors"
                   >
-                    优化歌单
+                    生成第{versions.length + 1}版歌单
                   </button>
                 )}
+                {versions.length >= MAX_TUNE_ROUNDS && hasTuneFeedback && (
+                  <p className="text-xs text-muted-foreground">宝～已为你优化 {MAX_TUNE_ROUNDS} 轮啦🥰，当前歌单已最贴合你的偏好，可直接导出使用哦</p>
+                )}
+                <button
+                  onClick={resetCurrentVersion}
+                  className="rounded-xl border border-border bg-card px-4 py-2 text-xs text-muted-foreground hover:bg-secondary transition-colors"
+                >
+                  重置当前版本
+                </button>
                 <button
                   onClick={handleReEvaluateFromPlaylist}
-                  className="rounded-xl border border-border bg-card px-5 py-2.5 text-sm text-muted-foreground hover:bg-secondary transition-colors"
+                  className="rounded-xl border border-border bg-card px-4 py-2 text-xs text-muted-foreground hover:bg-secondary transition-colors"
                 >
                   重新评价
                 </button>
@@ -886,6 +1046,22 @@ export default function DemoLoopStage({
           >
             <div className="rounded-2xl border border-border bg-popover/95 px-8 py-6 text-center shadow-xl backdrop-blur-sm">
               <p className="text-lg text-foreground">{encouragement}</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Action toast */}
+      <AnimatePresence>
+        {actionToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-8 left-1/2 z-50 -translate-x-1/2"
+          >
+            <div className="rounded-xl border border-border bg-popover/95 px-5 py-2.5 text-sm text-foreground shadow-lg backdrop-blur-sm">
+              {actionToast}
             </div>
           </motion.div>
         )}
