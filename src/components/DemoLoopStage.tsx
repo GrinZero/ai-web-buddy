@@ -26,6 +26,8 @@ interface DemoLoopStageProps {
   onRestart: () => void;
 }
 
+const MAX_TUNE_ROUNDS = 3;
+
 export default function DemoLoopStage({
   songs, scene, sceneIndex, totalScenes, usedSongs,
   onComplete, onBackToScenes, onRestart,
@@ -47,6 +49,10 @@ export default function DemoLoopStage({
   const [progress, setProgress] = useState(0);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clickCount = useRef(0);
+
+  // Tuning state
+  const [tuneRound, setTuneRound] = useState(0);
+  const [tuneFeedback, setTuneFeedback] = useState<Record<string, 'like' | 'dislike'>>({});
 
   // Initialize demos
   const startDemos = useCallback(() => {
@@ -98,7 +104,7 @@ export default function DemoLoopStage({
     } else {
       // All demos done
       setProgress(50);
-      showEncouragement('demoComplete', () => {
+      showEncouragementMsg('demoComplete', () => {
         setSubStage('quiz');
         setQuizIdx(0);
       });
@@ -109,7 +115,7 @@ export default function DemoLoopStage({
     setDislikeCategory(category);
   };
 
-  const handleDislikeDetail = (detail: string) => {
+  const handleDislikeDetail = (_detail: string) => {
     setShowDislikePopup(false);
     setDislikeCategory(null);
     advanceDemo();
@@ -127,20 +133,21 @@ export default function DemoLoopStage({
     } else {
       // Quiz done
       setProgress(80);
-      showEncouragement('quizComplete', () => {
-        // Generate playlist
+      showEncouragementMsg('quizComplete', () => {
         const pl = generatePlaylist(songs, scene, preference, usedSongs);
         setPlaylist(pl);
+        setTuneRound(0);
+        setTuneFeedback({});
         setProgress(100);
         setSubStage('playlist');
         setTimeout(() => {
-          showEncouragement('playlistReady', () => {});
+          showEncouragementMsg('playlistReady', () => {});
         }, 500);
       });
     }
   };
 
-  const showEncouragement = (type: 'demoComplete' | 'quizComplete' | 'playlistReady', callback: () => void) => {
+  const showEncouragementMsg = (type: 'demoComplete' | 'quizComplete' | 'playlistReady', callback: () => void) => {
     const msgs = ENCOURAGEMENTS[type];
     const msg = msgs[Math.floor(Math.random() * msgs.length)];
     setEncouragement(msg);
@@ -149,6 +156,65 @@ export default function DemoLoopStage({
       callback();
     }, 2500);
   };
+
+  // Tuning: toggle feedback on a song in the playlist
+  const toggleTuneFeedback = (songKey: string, type: 'like' | 'dislike') => {
+    setTuneFeedback(prev => {
+      const next = { ...prev };
+      if (next[songKey] === type) {
+        delete next[songKey];
+      } else {
+        next[songKey] = type;
+      }
+      return next;
+    });
+  };
+
+  // Apply tuning: regenerate playlist based on feedback
+  const applyTuning = () => {
+    const dislikedKeys = new Set(
+      Object.entries(tuneFeedback)
+        .filter(([, v]) => v === 'dislike')
+        .map(([k]) => k)
+    );
+    const likedKeys = new Set(
+      Object.entries(tuneFeedback)
+        .filter(([, v]) => v === 'like')
+        .map(([k]) => k)
+    );
+
+    // Keep liked songs, remove disliked, fill from remaining pool
+    const kept = playlist.filter(s => {
+      const key = `${s.name}-${s.artist}`;
+      return !dislikedKeys.has(key);
+    });
+
+    const usedKeys = new Set([
+      ...Array.from(usedSongs),
+      ...kept.map(s => `${s.name}-${s.artist}`),
+    ]);
+
+    // Update preference with liked songs from tuning
+    const newLiked = playlist.filter(s => likedKeys.has(`${s.name}-${s.artist}`));
+    setPreference(prev => ({
+      ...prev,
+      likedSongs: [...prev.likedSongs, ...newLiked],
+    }));
+
+    // Fill replacements
+    const remaining = songs.filter(s => !usedKeys.has(`${s.name}-${s.artist}`));
+    const needed = 10 - kept.length;
+    const replacements = remaining.slice(0, Math.max(0, needed));
+
+    const newPlaylist = [...kept, ...replacements].slice(0, 10);
+    setPlaylist(newPlaylist);
+    setTuneRound(prev => prev + 1);
+    setTuneFeedback({});
+
+    showEncouragementMsg('playlistReady', () => {});
+  };
+
+  const hasTuneFeedback = Object.keys(tuneFeedback).length > 0;
 
   const handleCompleteScene = () => {
     onComplete({ scene, playlist });
@@ -181,7 +247,7 @@ export default function DemoLoopStage({
           <span>
             {subStage === 'demo' && `Demo 评价中 ${currentDemoIdx + 1}/4`}
             {subStage === 'quiz' && `选择题 ${quizIdx + 1}/${quizQuestions.length}`}
-            {subStage === 'playlist' && '歌单已生成'}
+            {subStage === 'playlist' && (tuneRound > 0 ? `歌单已调优 (第${tuneRound}轮)` : '歌单已生成')}
             {subStage === 'rules' && '准备开始'}
           </span>
           <span>{progress}%</span>
@@ -237,7 +303,6 @@ export default function DemoLoopStage({
               className="flex flex-col items-center"
             >
               <div className="relative">
-                {/* Album cover */}
                 <motion.div
                   onClick={handleDemoClick}
                   whileHover={{ scale: 1.05 }}
@@ -246,15 +311,12 @@ export default function DemoLoopStage({
                 >
                   {currentDemo.name.charAt(0)}
                 </motion.div>
-
-                {/* Heart animation */}
                 {showHeartAnim && (
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <span className="animate-heart-pop text-6xl">💕</span>
                   </div>
                 )}
               </div>
-
               <h3 className="mt-6 text-xl font-medium text-foreground">{currentDemo.name}</h3>
               <p className="mt-1 text-muted-foreground">{currentDemo.artist}</p>
               <p className="mt-6 text-xs text-muted-foreground">双击封面表示喜欢，单击表示不太对</p>
@@ -353,7 +415,7 @@ export default function DemoLoopStage({
             </motion.div>
           )}
 
-          {/* Playlist result */}
+          {/* Playlist result with tuning */}
           {subStage === 'playlist' && (
             <motion.div
               key="playlist"
@@ -361,35 +423,82 @@ export default function DemoLoopStage({
               animate={{ opacity: 1, y: 0 }}
               className="w-full max-w-lg"
             >
-              <div className="mb-6 text-center">
+              <div className="mb-4 text-center">
                 <span className="text-3xl">{scene.icon}</span>
                 <h2 className="mt-2 text-xl font-semibold text-foreground">{scene.name} · {playlist.length} 首</h2>
+                {tuneRound < MAX_TUNE_ROUNDS && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    点击 👍/👎 标记歌曲，然后点「调优歌单」替换不喜欢的歌（还可调优 {MAX_TUNE_ROUNDS - tuneRound} 轮）
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
-                {playlist.map((song, i) => (
-                  <motion.div
-                    key={`${song.name}-${song.artist}`}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="flex items-center gap-4 rounded-xl border border-border bg-card p-3 hover:bg-secondary transition-colors"
-                  >
-                    <div
-                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-lg font-serif text-white/80"
-                      style={{ background: getAlbumGradient(song.name) }}
+                {playlist.map((song, i) => {
+                  const key = `${song.name}-${song.artist}`;
+                  const feedback = tuneFeedback[key];
+                  return (
+                    <motion.div
+                      key={key}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.05 }}
+                      className={`flex items-center gap-4 rounded-xl border p-3 transition-colors ${
+                        feedback === 'like'
+                          ? 'border-primary bg-vibe-pink-light'
+                          : feedback === 'dislike'
+                          ? 'border-destructive/30 bg-destructive/5'
+                          : 'border-border bg-card hover:bg-secondary'
+                      }`}
                     >
-                      {song.name.charAt(0)}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-foreground">{song.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">{song.artist}</p>
-                    </div>
-                  </motion.div>
-                ))}
+                      <div
+                        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-lg font-serif text-white/80"
+                        style={{ background: getAlbumGradient(song.name) }}
+                      >
+                        {song.name.charAt(0)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-foreground">{song.name}</p>
+                        <p className="truncate text-xs text-muted-foreground">{song.artist}</p>
+                      </div>
+                      {tuneRound < MAX_TUNE_ROUNDS && (
+                        <div className="flex gap-1.5 shrink-0">
+                          <button
+                            onClick={() => toggleTuneFeedback(key, 'like')}
+                            className={`rounded-lg px-2 py-1 text-sm transition-all ${
+                              feedback === 'like'
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-secondary text-muted-foreground hover:bg-primary/20'
+                            }`}
+                          >
+                            👍
+                          </button>
+                          <button
+                            onClick={() => toggleTuneFeedback(key, 'dislike')}
+                            className={`rounded-lg px-2 py-1 text-sm transition-all ${
+                              feedback === 'dislike'
+                                ? 'bg-destructive text-destructive-foreground'
+                                : 'bg-secondary text-muted-foreground hover:bg-destructive/20'
+                            }`}
+                          >
+                            👎
+                          </button>
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
               </div>
 
               <div className="mt-8 flex justify-center gap-3">
+                {tuneRound < MAX_TUNE_ROUNDS && hasTuneFeedback && (
+                  <button
+                    onClick={applyTuning}
+                    className="rounded-xl border border-border bg-card px-5 py-2.5 text-sm text-foreground hover:bg-secondary transition-colors"
+                  >
+                    🔄 调优歌单（第{tuneRound + 1}轮）
+                  </button>
+                )}
                 <button
                   onClick={handleCompleteScene}
                   className="rounded-xl bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:bg-vibe-pink-hover transition-colors"
