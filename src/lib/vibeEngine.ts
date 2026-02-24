@@ -36,12 +36,12 @@ export interface QuizQuestion {
   question: string;
   options: QuizOption[];
   multiSelect: boolean;
-  swappable: boolean; // 偏好题可换题
+  swappable: boolean;
 }
 
 export interface QuizOption {
   label: string;
-  songRef?: string; // 实证题关联的歌曲
+  songRef?: string;
 }
 
 export interface UserPreference {
@@ -49,7 +49,7 @@ export interface UserPreference {
   dislikedRhythms: string[];
   dislikedStyles: string[];
   likedSongs: Song[];
-  quizAnswers: Record<string, string[]>; // 改为多选
+  quizAnswers: Record<string, string[]>;
 }
 
 // 7 个初始场景
@@ -176,15 +176,29 @@ function simpleHash(str: string): number {
   return Math.abs(hash);
 }
 
-// 为场景选择 Demo 歌曲
-export function selectDemoSongs(songs: Song[], scene: Scene, usedSongs: Set<string>): Song[] {
+// V4: 一次性预生成≥12首Demo备选池
+export function selectDemoPool(songs: Song[], scene: Scene, usedSongs: Set<string>): Song[] {
   const available = songs.filter(s => !usedSongs.has(`${s.name}-${s.artist}`));
   const sorted = [...available].sort((a, b) => {
-    const hashA = simpleHash(a.name + scene.id);
-    const hashB = simpleHash(b.name + scene.id);
+    const hashA = simpleHash(a.name + scene.id + 'demo-pool');
+    const hashB = simpleHash(b.name + scene.id + 'demo-pool');
     return hashA - hashB;
   });
-  return sorted.slice(0, 4);
+  // 至少12首，不足则全部返回
+  return sorted.slice(0, Math.max(12, Math.min(available.length, 16)));
+}
+
+// V4: 从Demo池中随机抽取一批展示（每次不重复）
+export function selectDemoBatch(pool: Song[], alreadyShown: Set<string>, batchSize: number = 4): Song[] {
+  const available = pool.filter(s => !alreadyShown.has(`${s.name}-${s.artist}`));
+  // Shuffle deterministically but differently each time
+  const shuffled = [...available].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, Math.min(batchSize, available.length));
+}
+
+// 保留旧接口兼容
+export function selectDemoSongs(songs: Song[], scene: Scene, usedSongs: Set<string>): Song[] {
+  return selectDemoPool(songs, scene, usedSongs).slice(0, 4);
 }
 
 // 根据偏好生成最终歌单（不限量）
@@ -193,34 +207,37 @@ export function generatePlaylist(
   scene: Scene,
   preference: UserPreference,
   usedInOtherScenes: Set<string>,
-  demoSongKeys: Set<string> = new Set()
+  demoSongKeys: Set<string> = new Set(),
+  previousVersionKeys: Set<string> = new Set() // V4: 版本去重
 ): Song[] {
-  // Start with liked songs from demo
-  const liked = preference.likedSongs.filter(s => !usedInOtherScenes.has(`${s.name}-${s.artist}`));
+  // Start with liked songs from demo (仅第一版)
+  const liked = previousVersionKeys.size === 0
+    ? preference.likedSongs.filter(s => !usedInOtherScenes.has(`${s.name}-${s.artist}`))
+    : [];
 
-  // Get remaining songs, excluding used ones and demo songs
+  // Get remaining songs, excluding used ones and previous versions
   const remaining = songs.filter(s => {
     const key = `${s.name}-${s.artist}`;
     if (usedInOtherScenes.has(key)) return false;
+    if (previousVersionKeys.has(key)) return false;
     if (liked.some(l => l.name === s.name && l.artist === s.artist)) return false;
     return true;
   });
 
   // Sort remaining by scene affinity (pseudo-random but deterministic)
   const sorted = [...remaining].sort((a, b) => {
-    const hashA = simpleHash(a.name + scene.id + 'final');
-    const hashB = simpleHash(b.name + scene.id + 'final');
+    const hashA = simpleHash(a.name + scene.id + 'final' + previousVersionKeys.size);
+    const hashB = simpleHash(b.name + scene.id + 'final' + previousVersionKeys.size);
     return hashA - hashB;
   });
 
   // 不限量：返回所有适配歌曲，liked优先
-  const result = [...liked, ...sorted];
-  return result.length >= 3 ? result : result;
+  return [...liked, ...sorted];
 }
 
-// ========== 选择题系统（V3 重构） ==========
+// ========== 选择题系统（V4 重构） ==========
 
-// 偏好题题库（核心4题 + 备用题）
+// 偏好题题库（核心4题 + 备用题，V4：全部出4题，支持换题）
 const PREFERENCE_QUESTIONS: Omit<QuizQuestion, 'id'>[] = [
   {
     type: 'preference',
@@ -270,7 +287,19 @@ const PREFERENCE_QUESTIONS: Omit<QuizQuestion, 'id'>[] = [
       { label: '不接受高强度' },
     ],
   },
-  // 备用题
+  // 备用题 (V4: 9个备用题)
+  {
+    type: 'preference',
+    question: '当前场景下，你偏爱歌曲的时长是？',
+    multiSelect: true,
+    swappable: true,
+    options: [
+      { label: '短时长（3分钟以内）' },
+      { label: '中等时长（3-4分钟）' },
+      { label: '较长时长（4分钟以上）' },
+      { label: '无所谓，好听就行' },
+    ],
+  },
   {
     type: 'preference',
     question: '当前场景下，你更偏爱哪种歌词风格？',
@@ -304,6 +333,7 @@ const PREFERENCE_QUESTIONS: Omit<QuizQuestion, 'id'>[] = [
       { label: '简约编曲（突出旋律）' },
       { label: '丰富编曲（多种乐器）' },
       { label: '清新编曲（轻快简单）' },
+      { label: '复古编曲（有年代感）' },
     ],
   },
   {
@@ -330,7 +360,7 @@ const EMPIRICAL_TEMPLATES = [
   '当前场景下，你觉得以下哪几首更适配这个场景？',
 ];
 
-// 生成实证题（使用用户歌单中的歌曲，排除Demo）
+// 生成实证题（V4: 4-6题）
 function generateEmpiricalQuestions(
   songs: Song[],
   demoKeys: Set<string>,
@@ -338,13 +368,11 @@ function generateEmpiricalQuestions(
   scene: Scene,
   count: number
 ): QuizQuestion[] {
-  // 可用歌曲池：排除Demo和已使用的
   const available = songs.filter(s => {
     const key = `${s.name}-${s.artist}`;
     return !demoKeys.has(key) && !usedSongs.has(key);
   });
 
-  // 伪随机排序
   const shuffled = [...available].sort((a, b) => {
     const hashA = simpleHash(a.name + scene.id + 'empirical');
     const hashB = simpleHash(b.name + scene.id + 'empirical');
@@ -377,7 +405,7 @@ function generateEmpiricalQuestions(
   return questions;
 }
 
-// 生成自适应选择题（V3: 偏好题1题 + 实证题2-3题）
+// V4: 生成自适应选择题（偏好题4题 + 实证题4-6题）
 export function generateQuizQuestions(
   songs: Song[],
   scene: Scene,
@@ -386,34 +414,50 @@ export function generateQuizQuestions(
 ): QuizQuestion[] {
   const songCount = songs.length;
 
-  // 确定实证题数量
-  let empiricalCount = 2;
-  if (songCount >= 500) empiricalCount = 3;
+  // V4: 实证题数量按歌单复杂度
+  let empiricalCount = 4; // 简单歌单
+  if (songCount >= 200 && songCount < 500) empiricalCount = 5; // 中等
+  if (songCount >= 500) empiricalCount = 6; // 复杂
 
-  // 偏好题：从题库随机选1题
-  const prefIdx = simpleHash(scene.id + 'pref') % Math.min(4, PREFERENCE_QUESTIONS.length);
-  const prefQuestion: QuizQuestion = {
-    ...PREFERENCE_QUESTIONS[prefIdx],
-    id: 'pref-0',
-  };
+  // V4: 偏好题固定4题（从前4题中选取，支持换题从备用中替换）
+  const prefQuestions: QuizQuestion[] = [];
+  const baseHash = simpleHash(scene.id + 'pref-order');
+  // 选前4题，但做一定排列变化
+  const indices = [0, 1, 2, 3].sort((a, b) => {
+    return simpleHash(`${a}-${scene.id}-${baseHash}`) - simpleHash(`${b}-${scene.id}-${baseHash}`);
+  });
+  for (let i = 0; i < 4; i++) {
+    prefQuestions.push({
+      ...PREFERENCE_QUESTIONS[indices[i]],
+      id: `pref-${i}`,
+    });
+  }
 
   // 实证题
   const empiricalQuestions = generateEmpiricalQuestions(songs, demoKeys, usedSongs, scene, empiricalCount);
 
-  return [prefQuestion, ...empiricalQuestions];
+  // V4: 先偏好题后实证题
+  return [...prefQuestions, ...empiricalQuestions];
 }
 
 // 获取备用偏好题（换题用）
 export function getSwapPreferenceQuestion(currentId: string, usedIds: Set<string>): QuizQuestion | null {
-  for (let i = 0; i < PREFERENCE_QUESTIONS.length; i++) {
+  // 从备用题（index 4+）中找未使用的
+  for (let i = 4; i < PREFERENCE_QUESTIONS.length; i++) {
     const id = `pref-swap-${i}`;
+    if (id === currentId || usedIds.has(id)) continue;
+    return { ...PREFERENCE_QUESTIONS[i], id };
+  }
+  // 也从前4题中找未使用的
+  for (let i = 0; i < PREFERENCE_QUESTIONS.length; i++) {
+    const id = `pref-swap-all-${i}`;
     if (id === currentId || usedIds.has(id)) continue;
     return { ...PREFERENCE_QUESTIONS[i], id };
   }
   return null;
 }
 
-// 不喜欢原因选项（V3: 增加解释和示例）
+// 不喜欢原因选项
 export interface DislikeDetail {
   label: string;
   explanation: string;
@@ -426,7 +470,7 @@ export interface DislikeCategory {
   explanation: string;
   example: string;
   details: DislikeDetail[];
-  hasFollowUp: boolean; // 类型不对味需要追问
+  hasFollowUp: boolean;
 }
 
 export const DISLIKE_REASONS: Record<'type' | 'rhythm' | 'style', DislikeCategory> = {
@@ -484,7 +528,7 @@ export const ENCOURAGEMENTS = {
     '完美完美✨！距离专属歌单又近了一步～',
   ],
   quizComplete: [
-    '厉害厉害👍！再一步就拥有专属歌单啦～',
+    '宝～偏好收集完成✅，马上为你生成专属歌单哦',
     '太厉害了🎉！歌单马上就好～',
     '快了快了🌈！让我为你挑选最对味的歌～',
   ],
@@ -517,4 +561,22 @@ export function getAlbumGradient(songName: string): string {
   const h1 = hues[hash % hues.length];
   const h2 = hues[hash2 % hues.length];
   return `linear-gradient(135deg, hsl(${h1}, 35%, 72%), hsl(${h2}, 40%, 80%))`;
+}
+
+// V4: 歌单版本管理
+export interface PlaylistVersion {
+  version: number; // 1, 2, 3
+  playlist: Song[];
+  tuneLikes: Record<string, { sameStyle: boolean; sameArtist: boolean }>;
+  tuneDislikes: Record<string, 'single' | 'style' | null>;
+  allSongKeys: Set<string>; // 该版本所有出现过的歌曲key
+}
+
+// V4: 收集所有历史版本出现过的歌曲key
+export function collectPreviousVersionKeys(versions: PlaylistVersion[]): Set<string> {
+  const keys = new Set<string>();
+  for (const v of versions) {
+    v.allSongKeys.forEach(k => keys.add(k));
+  }
+  return keys;
 }
