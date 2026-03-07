@@ -52,7 +52,7 @@ export function useNeteaseInfo() {
       for (const song of toFetch) {
         try {
           // Search for song
-          const searchRes = await fetch(`${neteaseApiUrl}/cloudsearch?keywords=${encodeURIComponent(song.name + ' ' + song.artist)}&type=1&limit=1`);
+          const searchRes = await fetch(`${neteaseApiUrl}/search?keywords=${encodeURIComponent(song.name + ' ' + song.artist)}&type=1&limit=1`);
           const searchData = await searchRes.json();
           
           if (searchData.result?.songs?.[0]) {
