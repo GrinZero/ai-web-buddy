@@ -106,7 +106,7 @@ export function useNeteaseInfo() {
 
 /**
  * Tiny inline audio player component for song previews.
- * Plays a 12-14s snippet then auto-stops.
+ * Uses backend audio clipping service to play intro + chorus (5s + 8s = 13s).
  */
 export function MiniPlayer({ 
   previewUrl, 
@@ -117,10 +117,20 @@ export function MiniPlayer({
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [clippedUrl, setClippedUrl] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
+  // Generate clipped audio URL from backend
+  useEffect(() => {
+    if (previewUrl) {
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+      const clipped = `${apiBaseUrl}/audio/preview?url=${encodeURIComponent(previewUrl)}`;
+      setClippedUrl(clipped);
+    }
+  }, [previewUrl]);
+
   const toggle = useCallback(() => {
-    if (!previewUrl || !audioRef.current) return;
+    if (!clippedUrl || !audioRef.current) return;
     if (playing) {
       audioRef.current.pause();
       setPlaying(false);
@@ -129,13 +139,13 @@ export function MiniPlayer({
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch(() => {});
       setPlaying(true);
-      // Auto-stop after 14s
+      // Auto-stop after 14s (in case clipping fails, fallback to full audio)
       timerRef.current = setTimeout(() => {
         audioRef.current?.pause();
         setPlaying(false);
       }, 14000);
     }
-  }, [previewUrl, playing]);
+  }, [clippedUrl, playing]);
 
   useEffect(() => {
     return () => {
@@ -144,15 +154,15 @@ export function MiniPlayer({
     };
   }, []);
 
-  if (!previewUrl) return null;
+  if (!clippedUrl) return null;
 
   return (
     <>
-      <audio ref={audioRef} src={previewUrl} preload="none" />
+      <audio ref={audioRef} src={clippedUrl} preload="none" />
       <button
         onClick={(e) => { e.stopPropagation(); toggle(); }}
         className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-xs text-primary hover:bg-primary/20 transition-colors shrink-0"
-        title={playing ? '暂停' : `试听 ${songName}`}
+        title={playing ? '暂停' : `试听 ${songName} (前奏+副歌)`}
       >
         {playing ? '⏸' : '▶'}
       </button>
