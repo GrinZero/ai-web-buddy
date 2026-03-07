@@ -840,7 +840,7 @@ export default function DemoLoopStage({
                         )}
                         <span className="flex-1">{opt.label}</span>
                         {songInfo?.previewUrl && (
-                          <MiniPlayer previewUrl={songInfo.previewUrl} songName={opt.label} />
+                          <MiniPlayer songName={songParts[0]} artist={songParts.slice(1).join('-')} />
                         )}
                       </button>
                     );
@@ -975,7 +975,7 @@ export default function DemoLoopStage({
                           <p className="truncate text-sm font-medium text-foreground">{song.name}</p>
                           <p className="truncate text-xs text-muted-foreground">{song.artist}</p>
                         </div>
-                        <MiniPlayer previewUrl={getInfo(song.name, song.artist).previewUrl} songName={song.name} />
+                        <MiniPlayer songName={song.name} artist={song.artist} />
                         {versions.length <= MAX_TUNE_ROUNDS && (
                           <div className="flex gap-1.5 shrink-0">
                             <button
