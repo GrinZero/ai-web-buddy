@@ -149,28 +149,52 @@ export function useNeteaseInfo() {
  * Uses backend audio clipping service to play intro + chorus (5s + 8s = 13s).
  */
 export function MiniPlayer({ 
-  previewUrl, 
-  songName 
+  songName,
+  artist,
 }: { 
-  previewUrl: string | null; 
   songName: string;
+  artist: string;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [clippedUrl, setClippedUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Generate clipped audio URL from backend
-  useEffect(() => {
-    if (previewUrl) {
+  // Fetch clipped audio URL from backend when needed
+  const fetchAudioUrl = useCallback(async () => {
+    if (clippedUrl || loading) return;
+    
+    setLoading(true);
+    try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
-      const clipped = `${apiBaseUrl}/audio/preview?url=${encodeURIComponent(previewUrl)}`;
-      setClippedUrl(clipped);
+      const response = await fetch(
+        `${apiBaseUrl}/songs/preview?name=${encodeURIComponent(songName)}&singer=${encodeURIComponent(artist)}`
+      );
+      const data = await response.json();
+      
+      if (data.code === 0 && data.data?.audioUrl) {
+        // audioUrl is relative path like /api/audio/segment?token=...
+        const fullUrl = data.data.audioUrl.startsWith('http') 
+          ? data.data.audioUrl 
+          : `${apiBaseUrl.replace('/api', '')}${data.data.audioUrl}`;
+        setClippedUrl(fullUrl);
+      }
+    } catch (error) {
+      console.error('Failed to fetch audio:', error);
+    } finally {
+      setLoading(false);
     }
-  }, [previewUrl]);
+  }, [songName, artist, clippedUrl, loading]);
 
-  const toggle = useCallback(() => {
-    if (!clippedUrl || !audioRef.current) return;
+  const toggle = useCallback(async () => {
+    if (!clippedUrl) {
+      await fetchAudioUrl();
+      return;
+    }
+    
+    if (!audioRef.current) return;
+    
     if (playing) {
       audioRef.current.pause();
       setPlaying(false);
@@ -185,7 +209,7 @@ export function MiniPlayer({
         setPlaying(false);
       }, 14000);
     }
-  }, [clippedUrl, playing]);
+  }, [clippedUrl, playing, fetchAudioUrl]);
 
   useEffect(() => {
     return () => {
@@ -200,20 +224,19 @@ export function MiniPlayer({
       <button
         onClick={(e) => { 
           e.stopPropagation(); 
-          if (!clippedUrl) {
-            alert('No audio available');
-            return;
-          }
           toggle(); 
         }}
+        disabled={loading}
         className={`flex h-7 w-7 items-center justify-center rounded-full text-xs transition-colors shrink-0 ${
-          clippedUrl 
+          loading
+            ? 'bg-muted text-muted-foreground cursor-wait'
+            : clippedUrl 
             ? 'bg-primary/10 text-primary hover:bg-primary/20' 
-            : 'bg-muted text-muted-foreground cursor-not-allowed'
+            : 'bg-primary/10 text-primary hover:bg-primary/20'
         }`}
-        title={!clippedUrl ? 'No audio' : (playing ? 'Pause' : `Play ${songName}`)}
+        title={loading ? 'Loading...' : (playing ? 'Pause' : `Play ${songName}`)}
       >
-        {playing ? '⏸' : '▶'}
+        {loading ? '⏳' : playing ? '⏸' : '▶'}
       </button>
     </>
   );
