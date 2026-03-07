@@ -60,7 +60,7 @@ export function useNeteaseInfo() {
             const songId = songData.id;
             
             // Get song URL
-            const urlRes = await fetch(`${neteaseApiUrl}/song/url/v1?id=${songId}&level=standard`);
+            const urlRes = await fetch(`${neteaseApiUrl}/song/url?id=${songId}&br=128000`);
             const urlData = await urlRes.json();
             
             results.push({
@@ -202,7 +202,7 @@ export function MiniPlayer({
         onClick={(e) => { 
           e.stopPropagation(); 
           if (!clippedUrl) {
-            alert('暂无音频资源（可能是版权限制）');
+            alert('暂无音频资源（可能是版权限制�?);
             return;
           }
           toggle(); 
@@ -214,7 +214,7 @@ export function MiniPlayer({
         }`}
         title={!clippedUrl ? '暂无音频' : (playing ? '暂停' : `试听 ${songName} (前奏+副歌)`)}
       >
-        {playing ? '⏸' : '▶'}
+        {playing ? '�? : '�?}
       </button>
     </>
   );
