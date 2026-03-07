@@ -661,7 +661,7 @@ export default function DemoLoopStage({
               <p className="mt-1 text-muted-foreground">{currentDemo.artist}</p>
               {/* Audio preview */}
               <div className="mt-2">
-                <MiniPlayer previewUrl={getInfo(currentDemo.name, currentDemo.artist).previewUrl} songName={currentDemo.name} />
+                <MiniPlayer songName={currentDemo.name} artist={currentDemo.artist} />
               </div>
 
               {/* Undo like hint */}
