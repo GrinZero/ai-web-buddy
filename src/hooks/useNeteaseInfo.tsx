@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 
-
 export interface SongMediaInfo {
   coverUrl: string | null;
   previewUrl: string | null;
@@ -136,7 +135,7 @@ export function useNeteaseInfo() {
       });
       setCache(prev => ({ ...prev, ...failEntries }));
     }
-  }, []); // V4 fix: stable callback - use cacheRef instead of cache dependency
+  }, []);
 
   const getInfo = useCallback((name: string, artist: string): SongMediaInfo => {
     return cache[getKey(name, artist)] || { coverUrl: null, previewUrl: null, neteaseId: null, loading: false };
@@ -202,7 +201,7 @@ export function MiniPlayer({
         onClick={(e) => { 
           e.stopPropagation(); 
           if (!clippedUrl) {
-            alert('暂无音频资源（可能是版权限制?);
+            alert('No audio available');
             return;
           }
           toggle(); 
@@ -214,9 +213,8 @@ export function MiniPlayer({
         }`}
         title={!clippedUrl ? 'No audio' : (playing ? 'Pause' : `Play ${songName}`)}
       >
-        {playing ? '? : '?}
+        {playing ? '⏸' : '▶'}
       </button>
     </>
   );
 }
-
