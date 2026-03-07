@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+
 
 export interface SongMediaInfo {
   coverUrl: string | null;
@@ -45,11 +45,52 @@ export function useNeteaseInfo() {
     setCache(prev => ({ ...prev, ...loadingEntries }));
 
     try {
-      const { data, error } = await supabase.functions.invoke('netease-song-info', {
-        body: { songs: toFetch.map(s => ({ name: s.name, artist: s.artist })) },
-      });
+      const neteaseApiUrl = 'https://netease-api-enhanced-opal.vercel.app';
+      
+      // Fetch song info for each song
+      const results = [];
+      for (const song of toFetch) {
+        try {
+          // Search for song
+          const searchRes = await fetch(`${neteaseApiUrl}/cloudsearch?keywords=${encodeURIComponent(song.name + ' ' + song.artist)}&type=1&limit=1`);
+          const searchData = await searchRes.json();
+          
+          if (searchData.result?.songs?.[0]) {
+            const songData = searchData.result.songs[0];
+            const songId = songData.id;
+            
+            // Get song URL
+            const urlRes = await fetch(`${neteaseApiUrl}/song/url/v1?id=${songId}&level=standard`);
+            const urlData = await urlRes.json();
+            
+            results.push({
+              name: song.name,
+              artist: song.artist,
+              coverUrl: songData.al?.picUrl ? `${songData.al.picUrl}?param=300y300` : null,
+              previewUrl: urlData.data?.[0]?.url || null,
+              neteaseId: songId,
+            });
+          } else {
+            results.push({
+              name: song.name,
+              artist: song.artist,
+              coverUrl: null,
+              previewUrl: null,
+              neteaseId: null,
+            });
+          }
+        } catch {
+          results.push({
+            name: song.name,
+            artist: song.artist,
+            coverUrl: null,
+            previewUrl: null,
+            neteaseId: null,
+          });
+        }
+      }
 
-      if (error || !data?.success) {
+      if (!results || results.length === 0) {
         // Mark all as failed (loading: false, no data)
         const failEntries: MediaCache = {};
         toFetch.forEach(s => {
@@ -61,13 +102,13 @@ export function useNeteaseInfo() {
         return;
       }
 
-      const results = data.results as Array<{
+      const finalResults = results as Array<{
         name: string; artist: string;
         coverUrl: string | null; previewUrl: string | null; neteaseId: number | null;
       }>;
 
       const successEntries: MediaCache = {};
-      results.forEach(r => {
+      finalResults.forEach(r => {
         const key = getKey(r.name, r.artist);
         inflight.current.delete(key);
         successEntries[key] = {
