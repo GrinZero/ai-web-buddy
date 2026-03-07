@@ -116,10 +116,10 @@ export default function DemoLoopStage({
     }
   }, [subStage, quizQuestions]);
 
-  // Fetch media for playlist top 10
+  // Fetch media for all playlist songs
   useEffect(() => {
     if (subStage === 'playlist' && playlist.length > 0) {
-      fetchBatch(playlist.slice(0, 10).map(s => ({ name: s.name, artist: s.artist })));
+      fetchBatch(playlist.map(s => ({ name: s.name, artist: s.artist })));
     }
   }, [subStage, playlist]);
 
@@ -959,7 +959,7 @@ export default function DemoLoopStage({
                     >
                       <div className="flex items-center gap-3">
                         {(() => {
-                          const info = i < 10 ? getInfo(song.name, song.artist) : null;
+                          const info = getInfo(song.name, song.artist);
                           return info?.coverUrl ? (
                             <img src={info.coverUrl} alt={song.name} className="h-12 w-12 shrink-0 rounded-lg object-cover" />
                           ) : (
@@ -975,9 +975,7 @@ export default function DemoLoopStage({
                           <p className="truncate text-sm font-medium text-foreground">{song.name}</p>
                           <p className="truncate text-xs text-muted-foreground">{song.artist}</p>
                         </div>
-                        {i < 10 && (
-                          <MiniPlayer previewUrl={getInfo(song.name, song.artist).previewUrl} songName={song.name} />
-                        )}
+                        <MiniPlayer previewUrl={getInfo(song.name, song.artist).previewUrl} songName={song.name} />
                         {versions.length <= MAX_TUNE_ROUNDS && (
                           <div className="flex gap-1.5 shrink-0">
                             <button
