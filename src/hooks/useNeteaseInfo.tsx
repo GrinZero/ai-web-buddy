@@ -202,7 +202,7 @@ export function MiniPlayer({
         onClick={(e) => { 
           e.stopPropagation(); 
           if (!clippedUrl) {
-            alert('暂无音频资源（可能是版权限制�?);
+            alert('暂无音频资源（可能是版权限制?);
             return;
           }
           toggle(); 
@@ -212,9 +212,9 @@ export function MiniPlayer({
             ? 'bg-primary/10 text-primary hover:bg-primary/20' 
             : 'bg-muted text-muted-foreground cursor-not-allowed'
         }`}
-        title={!clippedUrl ? '暂无音频' : (playing ? '暂停' : `试听 ${songName} (前奏+副歌)`)}
+        title={!clippedUrl ? 'No audio' : (playing ? 'Pause' : `Play ${songName}`)}
       >
-        {playing ? '�? : '�?}
+        {playing ? '? : '?}
       </button>
     </>
   );
