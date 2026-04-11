@@ -176,6 +176,48 @@ function simpleHash(str: string): number {
   return Math.abs(hash);
 }
 
+interface SongFingerprint {
+  tempo: 'slow' | 'medium' | 'fast';
+  energy: number; // 1-5
+  genres: string[];
+  moods: string[];
+}
+
+function inferSongFingerprint(song: Song): SongFingerprint {
+  const text = `${song.name} ${song.artist}`.toLowerCase();
+
+  let tempo: 'slow' | 'medium' | 'fast' = 'medium';
+  if (/remix|dj|dance|power|燃|快/.test(text)) tempo = 'fast';
+  if (/piano|acoustic|live|轻音乐|慢|夜/.test(text)) tempo = 'slow';
+
+  let energy = 3;
+  if (/燃|rock|metal|edm|dance|炸/.test(text)) energy = 5;
+  else if (/轻|chill|piano|acoustic|安静|夜/.test(text)) energy = 2;
+
+  const genreDict = ['流行', '电子', '说唱', '摇滚', '民谣', 'r&b', '古典', '轻音乐'];
+  const moodDict = ['治愈', '轻快', '温暖', '放松', '舒缓', '专注', '平静', '活力', '激情', '安静'];
+
+  const genres = genreDict.filter(g => text.includes(g.toLowerCase()));
+  const moods = moodDict.filter(m => text.includes(m.toLowerCase()));
+
+  return { tempo, energy, genres, moods };
+}
+
+function songSimilarity(a: SongFingerprint, b: SongFingerprint): number {
+  let score = 0;
+
+  if (a.tempo === b.tempo) score += 0.35;
+  score += Math.max(0, 1 - Math.abs(a.energy - b.energy) / 4) * 0.35;
+
+  const genreOverlap = a.genres.filter(g => b.genres.includes(g)).length;
+  const moodOverlap = a.moods.filter(m => b.moods.includes(m)).length;
+
+  score += Math.min(0.2, genreOverlap * 0.08);
+  score += Math.min(0.1, moodOverlap * 0.05);
+
+  return Math.min(1, score);
+}
+
 // V4: 一次性预生成≥12首Demo备选池
 export function selectDemoPool(songs: Song[], scene: Scene, usedSongs: Set<string>): Song[] {
   const available = songs.filter(s => !usedSongs.has(`${s.name}-${s.artist}`));
@@ -215,6 +257,8 @@ export function generatePlaylist(
     qualityThreshold?: number;
     preferredArtists?: string[];
     tuningRound?: number;
+    likedStyleSeeds?: Song[];
+    dislikedStyleSeeds?: Song[];
   }
 ): Song[] {
   // Start with liked songs from demo (always included first)
@@ -309,6 +353,9 @@ export function generatePlaylist(
   const sceneGenreHints = scene.vibeProfile.genres.map(g => g.toLowerCase());
   const sceneMoodHints = scene.vibeProfile.mood.map(m => m.toLowerCase());
 
+  const likedStyleFingerprints = (options?.likedStyleSeeds || []).map(inferSongFingerprint);
+  const dislikedStyleFingerprints = (options?.dislikedStyleSeeds || []).map(inferSongFingerprint);
+
   const scored = remaining.map(s => {
     let score = 0;
     const key = `${s.name}-${s.artist}`;
@@ -352,6 +399,17 @@ export function generatePlaylist(
     // Penalize by preference quiz keywords
     for (const kw of penaltyKeywords) {
       if (nameArtist.includes(kw)) score -= 8;
+    }
+
+    // Style seed similarity (同风格喜欢/不喜欢)
+    const fp = inferSongFingerprint(s);
+    if (likedStyleFingerprints.length > 0) {
+      const bestLikedSim = Math.max(...likedStyleFingerprints.map(seed => songSimilarity(fp, seed)));
+      score += Math.round(bestLikedSim * 10);
+    }
+    if (dislikedStyleFingerprints.length > 0) {
+      const bestDislikedSim = Math.max(...dislikedStyleFingerprints.map(seed => songSimilarity(fp, seed)));
+      score -= Math.round(bestDislikedSim * 12);
     }
 
     // Scene affinity hash for deterministic ordering within same score
