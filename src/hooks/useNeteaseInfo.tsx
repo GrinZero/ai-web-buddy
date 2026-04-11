@@ -44,50 +44,34 @@ export function useNeteaseInfo() {
     setCache(prev => ({ ...prev, ...loadingEntries }));
 
     try {
-      const neteaseApiUrl = 'https://netease-api-enhanced-opal.vercel.app';
-      
-      // Fetch song info for each song
-      const results = [];
-      for (const song of toFetch) {
-        try {
-          // Search for song
-          const searchRes = await fetch(`${neteaseApiUrl}/search?keywords=${encodeURIComponent(song.name + ' ' + song.artist)}&type=1&limit=1`);
-          const searchData = await searchRes.json();
-          
-          if (searchData.result?.songs?.[0]) {
-            const songData = searchData.result.songs[0];
-            const songId = songData.id;
-            
-            // Get song URL
-            const urlRes = await fetch(`${neteaseApiUrl}/song/url?id=${songId}&br=128000`);
-            const urlData = await urlRes.json();
-            
-            results.push({
-              name: song.name,
-              artist: song.artist,
-              coverUrl: songData.al?.picUrl ? `${songData.al.picUrl}?param=300y300` : null,
-              previewUrl: urlData.data?.[0]?.url || null,
-              neteaseId: songId,
-            });
-          } else {
-            results.push({
-              name: song.name,
-              artist: song.artist,
-              coverUrl: null,
-              previewUrl: null,
-              neteaseId: null,
-            });
-          }
-        } catch {
-          results.push({
-            name: song.name,
-            artist: song.artist,
-            coverUrl: null,
-            previewUrl: null,
-            neteaseId: null,
-          });
-        }
-      }
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+
+      const response = await fetch(`${apiBaseUrl}/songs/enrich`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          songList: toFetch.map(song => ({ name: song.name, singer: song.artist })),
+        }),
+      });
+      const payload = await response.json();
+
+      const standardSongList = Array.isArray(payload?.data?.standardSongList)
+        ? payload.data.standardSongList
+        : [];
+
+      const results = toFetch.map(song => {
+        const hit = standardSongList.find((item: { name?: string; singer?: string; cover?: string | null; audio?: string | null }) => (
+          String(item?.name || '').trim() === song.name && String(item?.singer || '').trim() === song.artist
+        ));
+
+        return {
+          name: song.name,
+          artist: song.artist,
+          coverUrl: hit?.cover || null,
+          previewUrl: hit?.audio || null,
+          neteaseId: null,
+        };
+      });
 
       if (!results || results.length === 0) {
         // Mark all as failed (loading: false, no data)
