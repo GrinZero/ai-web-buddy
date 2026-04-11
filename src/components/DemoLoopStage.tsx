@@ -302,12 +302,15 @@ export default function DemoLoopStage({
 
   const handleQuizNext = () => {
     const sel = quizSelections[currentQuiz.id];
-    if (sel && sel.size > 0) {
-      setPreference(prev => ({
-        ...prev,
-        quizAnswers: { ...prev.quizAnswers, [currentQuiz.id]: Array.from(sel) },
-      }));
-    }
+    const nextPreference: UserPreference = {
+      ...preference,
+      quizAnswers: {
+        ...preference.quizAnswers,
+        ...(sel && sel.size > 0 ? { [currentQuiz.id]: Array.from(sel) } : {}),
+      },
+    };
+
+    setPreference(nextPreference);
 
     if (quizIdx < quizQuestions.length - 1) {
       setQuizIdx(prev => prev + 1);
@@ -315,7 +318,11 @@ export default function DemoLoopStage({
     } else {
       setProgress(80);
       showEncouragementMsg('quizComplete', () => {
-        const pl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, new Set());
+        const pl = generatePlaylist(songs, scene, nextPreference, usedSongs, allDemoKeys, new Set(), {
+          maxCount: 100,
+          qualityThreshold: -2,
+          tuningRound: 0,
+        });
         const v: PlaylistVersion = {
           version: 1,
           playlist: pl,
@@ -436,8 +443,25 @@ export default function DemoLoopStage({
     // V4 fix: only exclude disliked songs, not entire previous playlists
     const dislikedKeys = collectDislikedSongKeys(versions);
 
-    // Generate new playlist excluding only disliked songs
-    const newPl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, dislikedKeys);
+    // 汇总用户希望增加的歌手偏好
+    const preferredArtists = new Set<string>();
+    for (const v of versions) {
+      for (const [songKey, likeOpt] of Object.entries(v.tuneLikes)) {
+        if (!likeOpt?.sameArtist) continue;
+        const sepIdx = songKey.lastIndexOf('-');
+        if (sepIdx > 0 && sepIdx < songKey.length - 1) {
+          preferredArtists.add(songKey.substring(sepIdx + 1).trim());
+        }
+      }
+    }
+
+    // Generate new playlist excluding disliked songs + with target size control
+    const newPl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, dislikedKeys, {
+      maxCount: 100,
+      qualityThreshold: -2,
+      preferredArtists: Array.from(preferredArtists),
+      tuningRound: versions.length,
+    });
 
     if (newPl.length === 0) {
       showToast('宝～当前已无新的贴合歌曲啦🥺，可切换至之前版本查看或直接导出哦');
