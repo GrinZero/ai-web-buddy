@@ -443,24 +443,47 @@ export default function DemoLoopStage({
     // V4 fix: only exclude disliked songs, not entire previous playlists
     const dislikedKeys = collectDislikedSongKeys(versions);
 
-    // 汇总用户希望增加的歌手偏好
+    // 汇总用户希望增加的歌手偏好 + 同风格种子
     const preferredArtists = new Set<string>();
+    const likedStyleSeeds: Song[] = [];
+    const dislikedStyleSeeds: Song[] = [];
+
+    const songByKey = new Map<string, Song>();
+    for (const v of versions) {
+      for (const s of v.playlist) {
+        songByKey.set(`${s.name}-${s.artist}`, s);
+      }
+    }
+
     for (const v of versions) {
       for (const [songKey, likeOpt] of Object.entries(v.tuneLikes)) {
-        if (!likeOpt?.sameArtist) continue;
-        const sepIdx = songKey.lastIndexOf('-');
-        if (sepIdx > 0 && sepIdx < songKey.length - 1) {
-          preferredArtists.add(songKey.substring(sepIdx + 1).trim());
+        if (likeOpt?.sameArtist) {
+          const sepIdx = songKey.lastIndexOf('-');
+          if (sepIdx > 0 && sepIdx < songKey.length - 1) {
+            preferredArtists.add(songKey.substring(sepIdx + 1).trim());
+          }
+        }
+        if (likeOpt?.sameStyle) {
+          const seed = songByKey.get(songKey);
+          if (seed) likedStyleSeeds.push(seed);
+        }
+      }
+      for (const [songKey, dislikeOpt] of Object.entries(v.tuneDislikes)) {
+        if (dislikeOpt === 'style') {
+          const seed = songByKey.get(songKey);
+          if (seed) dislikedStyleSeeds.push(seed);
         }
       }
     }
 
-    // Generate new playlist excluding disliked songs + with target size control
+    // Generate new playlist excluding disliked songs + with style-aware tuning
     const newPl = generatePlaylist(songs, scene, preference, usedSongs, allDemoKeys, dislikedKeys, {
       maxCount: 100,
       qualityThreshold: -2,
       preferredArtists: Array.from(preferredArtists),
       tuningRound: versions.length,
+      likedStyleSeeds,
+      dislikedStyleSeeds,
     });
 
     if (newPl.length === 0) {
