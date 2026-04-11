@@ -209,7 +209,13 @@ export function generatePlaylist(
   preference: UserPreference,
   usedInOtherScenes: Set<string>,
   demoSongKeys: Set<string> = new Set(),
-  dislikedSongKeys: Set<string> = new Set() // V4: 仅排除被❌的歌曲
+  dislikedSongKeys: Set<string> = new Set(), // V4: 仅排除被❌的歌曲
+  options?: {
+    maxCount?: number;
+    qualityThreshold?: number;
+    preferredArtists?: string[];
+    tuningRound?: number;
+  }
 ): Song[] {
   // Start with liked songs from demo (always included first)
   const liked = preference.likedSongs.filter(s => !usedInOtherScenes.has(`${s.name}-${s.artist}`));
@@ -245,14 +251,49 @@ export function generatePlaylist(
   // Since we can't access quiz questions here, empiricalShownKeys only has selected ones
   // We'll use demoSongKeys to identify demo songs for exclusion awareness
 
-  // Parse preference quiz signals for penalty keywords
+  // 结构化偏好权重（来自选择题）
+  const prefSignal = {
+    tempoFast: 0,
+    tempoMedium: 0,
+    tempoSlow: 0,
+    energy: 0,
+    electronic: 0,
+    acoustic: 0,
+    rapPenalty: 0,
+    highIntensityPenalty: 0,
+  };
+
+  // Parse preference quiz signals
   const penaltyKeywords: string[] = [];
   for (const [qId, selections] of Object.entries(preference.quizAnswers)) {
     if (!qId.startsWith('pref')) continue;
     for (const sel of selections) {
       const lower = sel.toLowerCase();
-      // "完全不接受" or "不太接受" rap → penalize rap-related
-      if (lower.includes('不接受') && lower.includes('说唱') || lower === '完全不接受' || lower === '不太接受') {
+
+      if (lower.includes('轻快') || lower.includes('律动')) {
+        prefSignal.tempoFast += 1;
+        prefSignal.energy += 1;
+      }
+      if (lower.includes('舒缓') || lower.includes('温柔') || lower.includes('安静')) {
+        prefSignal.tempoSlow += 1;
+        prefSignal.energy -= 1;
+      }
+      if (lower.includes('中强度')) {
+        prefSignal.tempoMedium += 1;
+      }
+      if (lower.includes('较高强度')) {
+        prefSignal.energy += 1;
+      }
+      if (lower.includes('低强度') || lower.includes('不接受高强度')) {
+        prefSignal.energy -= 2;
+        prefSignal.highIntensityPenalty += 1;
+      }
+
+      if (lower.includes('电子')) prefSignal.electronic += 1;
+      if (lower.includes('钢琴') || lower.includes('吉他') || lower.includes('纯人声')) prefSignal.acoustic += 1;
+
+      if ((lower.includes('不接受') && lower.includes('说唱')) || lower === '完全不接受' || lower === '不太接受') {
+        prefSignal.rapPenalty += 1;
         penaltyKeywords.push('说唱', 'rap', 'hip-hop', 'hiphop');
       }
       if (lower.includes('不接受高强度')) {
@@ -261,11 +302,28 @@ export function generatePlaylist(
     }
   }
 
-  // V4: Apply preference-based scoring
+  // V4+: Apply preference-based scoring
+  const preferredArtistsSet = new Set((options?.preferredArtists || []).map(a => a.trim().toLowerCase()).filter(Boolean));
+
+  const sceneTempoHint = scene.vibeProfile.tempo;
+  const sceneGenreHints = scene.vibeProfile.genres.map(g => g.toLowerCase());
+  const sceneMoodHints = scene.vibeProfile.mood.map(m => m.toLowerCase());
+
   const scored = remaining.map(s => {
     let score = 0;
     const key = `${s.name}-${s.artist}`;
     const nameArtist = `${s.name} ${s.artist}`.toLowerCase();
+    const artistLower = s.artist.toLowerCase();
+
+    // 基础场景匹配（基于已有 scene profile + 文本弱匹配）
+    for (const g of sceneGenreHints) {
+      if (nameArtist.includes(g)) score += 3;
+    }
+    for (const m of sceneMoodHints) {
+      if (nameArtist.includes(m)) score += 2;
+    }
+    if (sceneTempoHint === 'fast' && (nameArtist.includes('remix') || nameArtist.includes('dj'))) score += 2;
+    if (sceneTempoHint === 'slow' && (nameArtist.includes('live') || nameArtist.includes('acoustic'))) score += 2;
 
     // Penalize disliked genres/styles/rhythms from demo feedback
     for (const g of preference.dislikedGenres) {
@@ -279,7 +337,17 @@ export function generatePlaylist(
     }
 
     // Boost songs liked in empirical quiz
-    if (empiricalLikedKeys.has(key)) score += 5;
+    if (empiricalLikedKeys.has(key)) score += 8;
+
+    // Boost preferred artists from tune feedback
+    if (preferredArtistsSet.has(artistLower)) score += 14;
+
+    // Structured preference signals
+    if (prefSignal.electronic > prefSignal.acoustic && (nameArtist.includes('electro') || nameArtist.includes('电子'))) score += 4;
+    if (prefSignal.acoustic > prefSignal.electronic && (nameArtist.includes('acoustic') || nameArtist.includes('钢琴') || nameArtist.includes('吉他'))) score += 4;
+
+    if (prefSignal.tempoFast > prefSignal.tempoSlow && (nameArtist.includes('remix') || nameArtist.includes('dance'))) score += 3;
+    if (prefSignal.tempoSlow > prefSignal.tempoFast && (nameArtist.includes('piano') || nameArtist.includes('轻音乐'))) score += 3;
 
     // Penalize by preference quiz keywords
     for (const kw of penaltyKeywords) {
@@ -297,11 +365,28 @@ export function generatePlaylist(
     return a.hash - b.hash;
   });
 
-  // V4 fix: Only return songs with score >= cutoff (filter out heavily penalized)
-  const cutoff = -15;
-  const filtered = scored.filter(s => s.score > cutoff);
+  // 质量阈值：支持按调优轮次自适应（越调越严格）
+  const tuningRound = Math.max(0, options?.tuningRound ?? 0);
+  const baseThreshold = options?.qualityThreshold ?? -2;
+  const adaptiveThreshold = baseThreshold + Math.min(6, tuningRound * 2);
+  const filtered = scored.filter(s => s.score >= adaptiveThreshold).map(s => s.song);
 
-  return [...liked, ...filtered.map(s => s.song)];
+  const merged = [...liked, ...filtered];
+
+  // 去重并保序（liked 优先）
+  const unique: Song[] = [];
+  const seen = new Set<string>();
+  for (const s of merged) {
+    const key = `${s.name}-${s.artist}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(s);
+  }
+
+  // 仅设置上限，不设置下限：最多100首
+  const maxCount = Math.max(1, options?.maxCount ?? 100);
+  if (unique.length <= maxCount) return unique;
+  return unique.slice(0, maxCount);
 }
 
 // ========== 选择题系统（V4 重构） ==========
