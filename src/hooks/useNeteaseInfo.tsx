@@ -143,6 +143,7 @@ export function MiniPlayer({
   const [playing, setPlaying] = useState(false);
   const [clippedUrl, setClippedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const shouldAutoPlayRef = useRef(false);
 
@@ -151,6 +152,7 @@ export function MiniPlayer({
     if (clippedUrl || loading) return;
 
     shouldAutoPlayRef.current = autoPlay;
+    setErrorMsg(null);
     setLoading(true);
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
@@ -165,8 +167,12 @@ export function MiniPlayer({
           ? data.data.audioUrl
           : `${apiBaseUrl.replace('/api', '')}${data.data.audioUrl}`;
         setClippedUrl(fullUrl);
+        return;
       }
+
+      setErrorMsg(data?.msg || '暂无可播放音源');
     } catch (error) {
+      setErrorMsg('获取音源失败，请重试');
       console.error('Failed to fetch audio:', error);
     } finally {
       setLoading(false);
@@ -224,21 +230,27 @@ export function MiniPlayer({
     <>
       {clippedUrl && <audio ref={audioRef} src={clippedUrl} preload="none" />}
       <button
-        onClick={(e) => { 
-          e.stopPropagation(); 
-          toggle(); 
+        onClick={(e) => {
+          e.stopPropagation();
+          toggle();
         }}
         disabled={loading}
         className={`flex h-7 w-7 items-center justify-center rounded-full text-xs transition-colors shrink-0 ${
           loading
             ? 'bg-muted text-muted-foreground cursor-wait'
-            : clippedUrl 
-            ? 'bg-primary/10 text-primary hover:bg-primary/20' 
-            : 'bg-primary/10 text-primary hover:bg-primary/20'
+            : errorMsg
+              ? 'bg-destructive/10 text-destructive hover:bg-destructive/20'
+              : 'bg-primary/10 text-primary hover:bg-primary/20'
         }`}
-        title={loading ? 'Loading...' : (playing ? 'Pause' : `Play ${songName}`)}
+        title={
+          loading
+            ? 'Loading...'
+            : errorMsg
+              ? `${errorMsg}（点击重试）`
+              : (playing ? 'Pause' : `Play ${songName}`)
+        }
       >
-        {loading ? '⏳' : playing ? '⏸' : '▶'}
+        {loading ? '⏳' : errorMsg ? '↻' : playing ? '⏸' : '▶'}
       </button>
     </>
   );
