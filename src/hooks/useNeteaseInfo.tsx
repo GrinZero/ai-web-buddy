@@ -144,11 +144,13 @@ export function MiniPlayer({
   const [clippedUrl, setClippedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const shouldAutoPlayRef = useRef(false);
 
   // Fetch clipped audio URL from backend when needed
-  const fetchAudioUrl = useCallback(async () => {
+  const fetchAudioUrl = useCallback(async (autoPlay = false) => {
     if (clippedUrl || loading) return;
-    
+
+    shouldAutoPlayRef.current = autoPlay;
     setLoading(true);
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
@@ -156,11 +158,11 @@ export function MiniPlayer({
         `${apiBaseUrl}/songs/preview?name=${encodeURIComponent(songName)}&singer=${encodeURIComponent(artist)}`
       );
       const data = await response.json();
-      
+
       if (data.code === 0 && data.data?.audioUrl) {
         // audioUrl is relative path like /api/audio/segment?token=...
-        const fullUrl = data.data.audioUrl.startsWith('http') 
-          ? data.data.audioUrl 
+        const fullUrl = data.data.audioUrl.startsWith('http')
+          ? data.data.audioUrl
           : `${apiBaseUrl.replace('/api', '')}${data.data.audioUrl}`;
         setClippedUrl(fullUrl);
       }
@@ -173,12 +175,12 @@ export function MiniPlayer({
 
   const toggle = useCallback(async () => {
     if (!clippedUrl) {
-      await fetchAudioUrl();
+      await fetchAudioUrl(true);
       return;
     }
-    
+
     if (!audioRef.current) return;
-    
+
     if (playing) {
       audioRef.current.pause();
       setPlaying(false);
