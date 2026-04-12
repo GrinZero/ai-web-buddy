@@ -198,6 +198,22 @@ export function MiniPlayer({
   }, [clippedUrl, playing, fetchAudioUrl]);
 
   useEffect(() => {
+    if (!clippedUrl || !shouldAutoPlayRef.current) return;
+    if (!audioRef.current) return;
+
+    shouldAutoPlayRef.current = false;
+    audioRef.current.currentTime = 0;
+    audioRef.current.play().then(() => {
+      setPlaying(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        audioRef.current?.pause();
+        setPlaying(false);
+      }, 14000);
+    }).catch(() => {});
+  }, [clippedUrl]);
+
+  useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       audioRef.current?.pause();
