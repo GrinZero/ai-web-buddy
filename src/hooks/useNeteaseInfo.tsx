@@ -14,6 +14,12 @@ type MediaCache = Record<string, SongMediaInfo>;
  * Call `fetchBatch` with an array of {name, artist} to load their info.
  * Results are cached by "name-artist" key.
  */
+function ensureHttpsUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  // 在 HTTPS 页面中，统一把 http 资源升级为 https，避免 Mixed Content
+  return url.replace(/^http:\/\//i, 'https://');
+}
+
 export function useNeteaseInfo() {
   const [cache, setCache] = useState<MediaCache>({});
   const cacheRef = useRef<MediaCache>({});
@@ -67,8 +73,9 @@ export function useNeteaseInfo() {
         return {
           name: song.name,
           artist: song.artist,
-          coverUrl: hit?.cover || null,
-          previewUrl: hit?.audio || null,
+          coverUrl: ensureHttpsUrl(hit?.cover || null),
+          // 前端禁止直连网易云音频链接，统一走后端 /songs/preview -> /audio/segment
+          previewUrl: null,
           neteaseId: null,
         };
       });
@@ -166,7 +173,7 @@ export function MiniPlayer({
         const fullUrl = data.data.audioUrl.startsWith('http')
           ? data.data.audioUrl
           : `${apiBaseUrl.replace('/api', '')}${data.data.audioUrl}`;
-        setClippedUrl(fullUrl);
+        setClippedUrl(ensureHttpsUrl(fullUrl));
         return;
       }
 
