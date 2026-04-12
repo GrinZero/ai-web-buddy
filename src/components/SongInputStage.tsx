@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { parseSongs, EXAMPLE_SONGS, type Song } from '@/lib/vibeEngine';
-import { supabase } from '@/integrations/supabase/client';
 
 interface SongInputStageProps {
   onNext: (songs: Song[]) => void;
@@ -33,23 +32,32 @@ export default function SongInputStage({ onNext }: SongInputStageProps) {
     setParsedFromLink([]);
 
     try {
-      const { data, error } = await supabase.functions.invoke('parse-playlist', {
-        body: { url: linkInput.trim() },
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+      const response = await fetch(`${apiBaseUrl}/playlist/parse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link: linkInput.trim() }),
       });
+      const data = await response.json();
 
-      if (error) {
+      if (!response.ok || data?.code !== 0) {
         setParseStatus('error');
-        setParseError('解析失败，请检查链接是否有效');
+        setParseError(data?.msg || '解析失败，请检查链接是否有效');
         return;
       }
 
-      if (!data.success) {
+      const songList = Array.isArray(data?.data?.songList) ? data.data.songList : [];
+      const lines = songList
+        .map((s: { name?: string; singer?: string }) => `${String(s?.name || '').trim()} - ${String(s?.singer || '').trim()}`)
+        .filter((line: string) => line !== ' - ' && line.trim().length > 3);
+
+      if (lines.length === 0) {
         setParseStatus('error');
-        setParseError(data.error || '解析失败');
+        setParseError('未解析到有效歌曲，请检查链接是否可访问');
         return;
       }
 
-      setParsedFromLink(data.songs);
+      setParsedFromLink(lines);
       setParseStatus('success');
     } catch {
       setParseStatus('error');
@@ -91,15 +99,32 @@ export default function SongInputStage({ onNext }: SongInputStageProps) {
       setTimeout(async () => {
         setParseStatus('loading');
         try {
-          const { data, error } = await supabase.functions.invoke('parse-playlist', {
-            body: { url: exampleLink },
+          const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+          const response = await fetch(`${apiBaseUrl}/playlist/parse`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ link: exampleLink }),
           });
-          if (error || !data?.success) {
+          const data = await response.json();
+
+          if (!response.ok || data?.code !== 0) {
             setParseStatus('error');
-            setParseError(data?.error || '示例链接解析失败，请尝试手动输入');
+            setParseError(data?.msg || '示例链接解析失败，请尝试手动输入');
             return;
           }
-          setParsedFromLink(data.songs);
+
+          const songList = Array.isArray(data?.data?.songList) ? data.data.songList : [];
+          const lines = songList
+            .map((s: { name?: string; singer?: string }) => `${String(s?.name || '').trim()} - ${String(s?.singer || '').trim()}`)
+            .filter((line: string) => line !== ' - ' && line.trim().length > 3);
+
+          if (lines.length === 0) {
+            setParseStatus('error');
+            setParseError('示例链接解析失败，请尝试手动输入');
+            return;
+          }
+
+          setParsedFromLink(lines);
           setParseStatus('success');
         } catch {
           setParseStatus('error');
