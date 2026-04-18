@@ -16,8 +16,11 @@ type MediaCache = Record<string, SongMediaInfo>;
  */
 function ensureHttpsUrl(url: string | null | undefined): string | null {
   if (!url) return null;
-  // 在 HTTPS 页面中，统一把 http 资源升级为 https，避免 Mixed Content
-  return url.replace(/^http:\/\//i, 'https://');
+  // Only upgrade to HTTPS if page is served over HTTPS and URL is not localhost
+  if (window.location.protocol === 'https:' && !url.includes('localhost') && !url.includes('127.0.0.1')) {
+    return url.replace(/^http:\/\//i, 'https://');
+  }
+  return url;
 }
 
 export function useNeteaseInfo() {
